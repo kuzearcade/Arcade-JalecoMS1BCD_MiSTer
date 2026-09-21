@@ -78,6 +78,7 @@ module ms1_video #(
 	output      [21:0]  spr_rom_addr,
 	input        [7:0]  spr_rom_data,
 	input               spr_rom_ready,
+	input               ss_rst_dbg,
 	input               ss_active,
 	input       [19:0]  ss_addr,
 	input               ss_wr,
@@ -151,7 +152,7 @@ module ms1_video #(
 	// ---- sprite plane. Its readback is one cycle, the tilemaps are three,
 	// so the sprite pixel is delayed two stages to meet them.
 	wire [8:0] fb_q;
-	ms1_sprites u_spr (.clk(clk), .reset(reset),
+	ms1_sprites u_spr (.clk(clk), .reset(reset | ss_rst_dbg),
 		.start(spr_start), .busy(spr_busy),
 		.sprite_flag(sprite_flag), .sprite_bank(sprite_bank),
 		.obj_addr(obj_addr), .obj_data(obj_data),

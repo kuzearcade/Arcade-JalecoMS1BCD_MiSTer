@@ -90,6 +90,11 @@ module ms1bcd_core #(
 	output              ss_parked,
 	input               ss_replay,
 	output              ss_replay_done,
+	// Bisection aid (debug only, tied 0 in any real build): pulse a reset at
+	// one subsystem so it enters both spans of a round trip from the same
+	// state. If that makes the divergence vanish, the state it holds is the
+	// state the image is missing. Bit 0 sound, 1 MCU, 2 sprite engine.
+	input        [3:0]  ss_rst_dbg,
 
 	output      [31:0]  dbg_romwait, dbg_romacc,
 	output reg  [31:0]  dbg_l0_miss, dbg_l1_miss, dbg_l2_miss, dbg_pix,
@@ -155,6 +160,7 @@ module ms1bcd_core #(
 		.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_main_rdata),
+		.ss_rst_dbg(ss_rst_dbg[2:1]),
 		.ss_freeze(ss_freeze), .ss_resume(ss_resume),
 		.ss_m68k_parked(ss_m68k_parked), .ss_mcu_frozen(ss_mcu_frozen),
 		.mcu_rom_addr(mcu_rom_addr), .mcu_rom_data(mcu_rom_data),
@@ -217,7 +223,7 @@ module ms1bcd_core #(
 
 	ms1_sound u_sound (
 		.clk(clk), .reset(reset), .mode(mode),
-		.sreset(r_scf[4]),          // screen_flag bit 4 holds the sound side reset
+		.sreset(r_scf[4] | ss_rst_dbg[0]),   // + the bisection aid
 		.oki_status_real(oki_status_real),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_snd_rdata),
@@ -325,6 +331,7 @@ module ms1bcd_core #(
 		.obj_data(objd), .spr_ram_data(sprd),
 		.spr_rom_addr(spr_rom_addr), .spr_rom_data(spr_rom_data),
 		.spr_rom_ready(spr_rom_ready),
+		.ss_rst_dbg(ss_rst_dbg[2]),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_spr_rdata(ss_spr_rdata),
 		.dbg_spr_pass_cycles(dbg_spr_pass_cycles), .dbg_spr_late_swaps(dbg_spr_late_swaps),

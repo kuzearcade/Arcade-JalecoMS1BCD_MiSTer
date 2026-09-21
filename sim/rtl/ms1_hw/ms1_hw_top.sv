@@ -106,6 +106,9 @@ module ms1_hw_top (
 
 	ms1bcd_core #(.LOOKAHEAD(8)) u_core (
 		.clk(clk_sys), .reset(core_reset), .mode(mode),
+		// Debug-only bisection aid, explicitly off here: an unconnected reset
+		// input is not something to leave to the tool's x-assign policy.
+		.ss_rst_dbg(4'd0),
 		.rom_addr(c_rom_addr), .rom_data(c_rom_data), .rom_ready(c_rom_ready),
 		.mcu_rom_addr(c_mcu_addr), .mcu_rom_data(c_mcu_data),
 		.mcu_rom_ready(c_mcu_ready),

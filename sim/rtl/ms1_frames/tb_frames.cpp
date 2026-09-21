@@ -69,6 +69,7 @@ int main(int argc, char **argv) {
 	top->spr_rom_ready = 1;
 	top->ss_freeze = 0; top->ss_resume = 0; top->ss_active = 0;
 	top->ss_addr = 0; top->ss_wr = 0; top->ss_wdata = 0; top->ss_replay = 0;
+	top->ss_rst_dbg = 0;
 	top->l0_rom_ready = 1; top->l1_rom_ready = 1; top->l2_rom_ready = 1;
 
 	auto serve = [&]() {
@@ -365,6 +366,14 @@ int main(int argc, char **argv) {
 				sn.sb1  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b1, 4096);
 				sn.plane = cp(R->ms1bcd_core__DOT__u_video__DOT__u_spr__DOT__plane, 65536);
 			};
+			const unsigned rmask = (unsigned)envl("MS1_SS_RST", 0);
+			auto pulse_rst = [&]() {
+				if (!rmask) return;
+				top->ss_rst_dbg = rmask;
+				for (int i = 0; i < 64; i++) tick();
+				top->ss_rst_dbg = 0;
+				for (int i = 0; i < 16; i++) tick();
+			};
 			auto runf = [&](long n) {
 				long got = 0; uint64_t g = 0;
 				while (got < n && g++ < 200000000ULL) {
@@ -376,11 +385,13 @@ int main(int argc, char **argv) {
 			stream_out();
 			std::vector<uint16_t> img0 = img;
 			release();
+			pulse_rst();
 			runf(K);
 			Snap A; grab(A);
 
 			if (!park()) { printf("FAIL: never parked (restore)\n"); return 1; }
 			img = img0; stream_in(); release();
+			pulse_rst();
 			runf(K);
 			Snap B; grab(B);
 
@@ -400,7 +411,13 @@ int main(int argc, char **argv) {
 					}
 				return n;
 			};
-			printf("\nnon-invasive divergence after %ld frames:\n", K);
+			size_t litA = 0;
+			for (auto v : A.v2) if (v != 0 && v != 0xF030) litA++;
+			printf("\nnon-invasive divergence after %ld frames (rst mask %u, "
+			       "vram2 non-idle cells %zu):\n", K, rmask, litA);
+			if (litA == 0)
+				printf("    WARNING: the text layer is empty -- a 'no divergence'"
+				       " here would be vacuous\n");
 			size_t t = 0;
 			t += cmp("wram", A.wram, B.wram);
 			t += cmp("vram0", A.v0, B.v0);

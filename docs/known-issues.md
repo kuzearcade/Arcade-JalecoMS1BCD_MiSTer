@@ -4,8 +4,9 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Five are open**: two recorded during M0 and answerable off-board, MS1-31,
-which needs the board, and MS1-32 / MS1-33 from M3.
+**Six are open**: two recorded during M0 and answerable off-board, MS1-31,
+which needs the board, MS1-32 / MS1-33 from M3, and MS1-36, which is a
+contradiction between a measurement and the schematic as read.
 
 | | | |
 |---|---|---|
@@ -44,6 +45,7 @@ which needs the board, and MS1-32 / MS1-33 from M3.
 | MS1-33 | A savestate round trip leaves one counter digit behind | **OPEN** — bounded at 25 pixels, cause not yet named |
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
+| MS1-36 | Resetting the sound subsystem changes main-CPU behaviour, and nothing explains how | **OPEN** — demonstrated with a control, mechanism unknown |
 
 ---
 
@@ -1005,3 +1007,53 @@ no pushes -- reports game state **bit-identical** at the same points. The
 lesson is narrow and worth keeping: a savestate probe must not use the
 savestate mechanism to observe, because that mechanism perturbs the two things
 a savestate is most likely to get wrong, the stack and the clock phase.
+
+
+## MS1-36 — Resetting the sound subsystem changes main-CPU behaviour, and nothing explains how (open)
+
+Found while bisecting MS1-33. A debug reset mask (`ss_rst_dbg`, tied 0 in every
+real build) pulses a reset at one subsystem at the start of BOTH spans of a
+savestate round trip, so that subsystem enters each span from the same state.
+
+Measured at K=4 on avspirit, reference sim:
+
+| mask | what it does | result |
+|---|---|---|
+| 0 | no pulse | wram 98 words 0x07F76..0x07FFF, vram2 2 words |
+| 8 | pulse 80 ticks, resets **nothing** | **identical to mask 0** |
+| 1 | pulse + sound reset | wram 96 words 0x07F4F..0x07FDB, vram2 **7** words |
+| 2 | pulse + MCU reset | identical to mask 0 |
+| 4 | pulse + sprite reset | identical to mask 0 |
+
+Mask 8 is the control that matters: it runs the identical 80-tick pulse and
+resets nothing, and it reproduces mask 0 exactly. So the pulse is not a
+confound and the mask-1 difference is caused by resetting the sound subsystem.
+
+**This contradicts the design as read.** `latch_to_main` is left unconnected in
+`ms1bcd_core`, and in the reference sim `srom_ready` is tied high and both OKI
+stalls tied low. Tracing every output `ms1_sound` drives:
+
+- `latch_to_main` -- unconnected;
+- `rom_addr`, `oki1_rom_addr`, `oki2_rom_addr` -- reach only the testbench's
+  ROM arrays, which feed nothing back;
+- `snd_l`, `snd_r`, every `dbg_*` -- core outputs, consumed by nobody;
+- `ss_rdata`, `ss_parked`, `ss_replay_done` -- inactive while a span runs.
+
+None of that is a path to the main CPU or the video, so resetting sound should
+have behaved exactly like mask 8. It did not.
+
+Either there is a coupling not visible by inspection, or the model of the
+design here is wrong somewhere. It was claimed TWICE in this project's own
+notes that the sound side cannot reach the video, on the strength of
+`latch_to_main` alone; the measurement says that reasoning was at best
+incomplete.
+
+This is recorded separately from MS1-33 because it is not specific to
+savestates: if sound state can influence the main CPU by some path, that
+matters for the M2 gate 3 and 4 numbers as well, which were taken on the
+assumption that the two sides are independent.
+
+**To settle it**: drive the sound reset in a plain run (no savestate involved)
+and diff the frames against an unreset run. If they differ, the coupling is
+real and unconditional, and a signal-by-signal trace of the elaborated netlist
+-- not the source -- is the way to find it.

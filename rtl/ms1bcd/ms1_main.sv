@@ -115,6 +115,7 @@ module ms1_main (
 	output reg  [15:0]  ss_rdata,
 	input               ss_freeze,
 	input               ss_resume,
+	input        [1:0]  ss_rst_dbg,   // bit 0 (of this slice) = MCU
 	output              ss_m68k_parked,
 	output              ss_mcu_frozen,
 
@@ -432,7 +433,7 @@ module ms1_main (
 	wire prot_we_edge = (we & sel_prot) & ~prot_we_pulse;
 
 	ms1_iomcu u_mcu (
-		.clk(clk), .cen(mcu_cen_tick), .reset(reset),
+		.clk(clk), .cen(mcu_cen_tick), .reset(reset | ss_rst_dbg[0]),
 		.host_we(prot_we_edge), .host_data(oEdb[7:0]),
 		.mcu_data(prot_rd), .main_irq2(mcu_irq2),
 		.int1(int1),
