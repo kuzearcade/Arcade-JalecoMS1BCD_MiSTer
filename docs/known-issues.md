@@ -26,6 +26,8 @@ closed by a measurement, never by reasoning.
 | MS1-16 | MAME's sprite order contradicts its own comment | **OPEN** — unobservable in any captured scene |
 | MS1-17 | The sprite trails effect is not modelled | **OPEN** — no captured scene uses it |
 | MS1-18 | A green gate can mean the feature was never exercised | closed |
+| MS1-19 | The protection MCU is paced by the video frame, not a timer | closed |
+| MS1-20 | A debug probe showed the read bus on writes | closed |
 
 ---
 
@@ -452,3 +454,54 @@ stops exercising its feature is visible rather than quietly green.
 This is the same failure shape as MS1-3 (a generator that produced .mra files
 with no PROM) and MS1-9 (frames six bytes too long): output that looks correct
 because nothing counted what it contained.
+
+## MS1-19 — The protection MCU is paced by the video frame, not a timer (closed)
+
+The TMP91640 boots, initialises its registers, disables the watchdog, and then
+parks in a tight loop at 0x0266 polling one byte of its internal RAM. Nothing
+in the MCU releases it. Its own INTEL write (0x10) enables exactly one source,
+and the vector it eventually takes is 0x0058, which is `0x10 + irq*8` for
+irq 9 = **INT1**.
+
+INT1 is not a timer and not the host handshake. From `megasys1.cpp`:
+
+```
+if (scanline == 0 + 16)    // end of vblank
+    m_iomcu->set_input_line(INPUT_LINE_IRQ1, ASSERT_LINE);
+if (scanline == 224 + 16)  // start of vblank
+    m_iomcu->set_input_line(INPUT_LINE_IRQ1, CLEAR_LINE);
+```
+
+It is the **display-enable signal**. The MCU's whole command loop runs off the
+video frame, so a standalone MCU harness with no video timing is not a slow
+MCU, it is a dead one — which is exactly how this presented.
+
+Two consequences that carry into the core:
+
+* INT1 is a LEVEL in MAME but the TLCS-90 core latches `irq_req` and does not
+  clear on take, so a held level re-pends forever. The wrapper takes the edge.
+* The edge detector must follow INT1 through reset. Releasing reset with the
+  beam already inside the visible area otherwise manufactures a rising edge
+  that never happened, and the MCU takes an interrupt thousands of cycles
+  early.
+
+## MS1-20 — A debug probe showed the read bus on writes (closed)
+
+The MCU wrapper's trace probe was `assign dbg_din = din`, and `din` is the
+READ bus. Every write in the trace therefore printed whatever the read mux
+happened to be presenting, which was 0.
+
+The trace then said the MCU wrote `00` to the watchdog register where MAME
+wrote `01`, and to every other register besides. Half an hour went into
+suspecting `LD r,n` in a CPU core that has eight passing ISA self-tests,
+before a synthetic two-instruction ROM showed the same `00` for an
+instruction with **no register operand at all** — which no plausible CPU bug
+explains, and which pointed straight at the probe.
+
+`assign dbg_din = mem_wr ? dout : din;` and the traces matched immediately.
+
+The lesson is the one MS1-3, MS1-9 and MS1-18 all taught in other forms:
+**instrumentation is code, and wrong instrumentation costs more than no
+instrumentation**, because it sends you looking in the right place for the
+wrong reason. When a trace accuses something that is already well tested,
+suspect the trace.

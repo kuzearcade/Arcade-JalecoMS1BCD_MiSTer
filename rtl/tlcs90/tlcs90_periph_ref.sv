@@ -124,6 +124,17 @@ module nmk004_periph (
 	output       p6_we,
 	output [7:0] p6_wdata,
 
+	// P1 external-read override + P2 write tap: the same shape as the P5/P6
+	// pair above, added for the Jaleco TMP91640 I/O MCU role, where MAME
+	// installs port_read<1> and port_write<2> (mcu_port1_r / mcu_port2_w in
+	// jaleco/megasys1.cpp). Port 1 reads the byte the main 68000 last wrote
+	// to the protection port; port 2 carries the MCU's answer back. Tie
+	// p1_ext_en low to keep every prior behaviour exactly.
+	input        p1_ext_en,
+	input  [7:0] p1_ext_val,
+	output       p2_we,
+	output [7:0] p2_wdata,
+
 	// P7 external-read override — see header. Tie p7_ext_en low to
 	// preserve the plain read/write latch behavior exactly.
 	input        p7_ext_en,
@@ -411,6 +422,8 @@ module nmk004_periph (
 	// P6 write tap — see header. Pure combinational pulse, independent of
 	// the p6 latch itself (which still updates normally below).
 	assign p6_we = we & (reg_addr == 6'h0c);
+	assign p2_we    = we & (reg_addr == 6'h04);
+	assign p2_wdata = wdata;
 	assign p6_wdata = wdata;
 	assign p3_we = we & (reg_addr == 6'h06);
 	assign p3_wdata = wdata;
@@ -422,7 +435,7 @@ module nmk004_periph (
 	// ------------------------------------------------------------------
 	always @(*) begin
 		case (reg_addr)
-			6'h01: rdata = p1;
+			6'h01: rdata = p1_ext_en ? p1_ext_val : p1;
 			6'h04: rdata = p2;
 			6'h06: rdata = p3;
 			6'h08: rdata = p4 & 8'h0f;
