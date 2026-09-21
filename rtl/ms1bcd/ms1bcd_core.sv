@@ -31,6 +31,17 @@ module ms1bcd_core (
 	output       [8:0]  prom_addr,
 	input        [7:0]  prom_data,
 
+	// sound ROMs, served by the caller
+	output      [16:0]  srom_addr,
+	input       [15:0]  srom_data,
+	output      [17:0]  oki1_rom_addr, oki2_rom_addr,
+	input        [7:0]  oki1_rom_data, oki2_rom_data,
+	input               oki_status_real,
+	output signed [15:0] snd_l, snd_r,
+	output      [31:0]  dbg_ym_writes, dbg_oki1_writes, dbg_oki2_writes,
+	output signed [15:0] dbg_fm_l, dbg_fm_r,
+	output signed [13:0] dbg_oki1, dbg_oki2,
+
 	output      [23:0]  rgb,
 	output              rgb_valid,
 	output              vblank_rise,
@@ -107,6 +118,7 @@ module ms1bcd_core (
 		.reg_t1_sx(r1x), .reg_t1_sy(r1y), .reg_t1_ctrl(r1c),
 		.reg_t2_sx(r2x), .reg_t2_sy(r2y), .reg_t2_ctrl(r2c),
 		.dbg_ramw_addr(), .dbg_ramw_data(), .dbg_ramw(),
+		.slatch_we(slatch_we), .slatch_data(slatch_data),
 		.dbg_acc(dbg_acc), .dbg_vregw(dbg_vregw), .dbg_vramw(dbg_vramw),
 		.dbg_irq2(dbg_irq2), .dbg_int1e(dbg_int1e),
 		.dbg_mcuacc(dbg_mcuacc), .dbg_mcubank(dbg_mcubank)
@@ -138,6 +150,27 @@ module ms1bcd_core (
 			if (u_video.o2) dbg_opaque2 <= dbg_opaque2 + 1;
 		end
 	end
+
+	// ---- sound subsystem. The main CPU's latch write is the only signal
+	// that crosses: it carries the command and raises the sound CPU's
+	// interrupt (level 4 on System B, level 2 on System C).
+	wire        slatch_we;
+	wire [15:0] slatch_data;
+
+	ms1_sound u_sound (
+		.clk(clk), .reset(reset), .mode(mode),
+		.sreset(r_scf[4]),          // screen_flag bit 4 holds the sound side reset
+		.oki_status_real(oki_status_real),
+		.latch_we(slatch_we), .latch_data(slatch_data), .latch_to_main(),
+		.rom_addr(srom_addr), .rom_data(srom_data),
+		.oki1_rom_addr(oki1_rom_addr), .oki2_rom_addr(oki2_rom_addr),
+		.oki1_rom_data(oki1_rom_data), .oki2_rom_data(oki2_rom_data),
+		.snd_l(snd_l), .snd_r(snd_r),
+		.dbg_ym_writes(dbg_ym_writes),
+		.dbg_oki1_writes(dbg_oki1_writes), .dbg_oki2_writes(dbg_oki2_writes),
+		.dbg_fm_l(dbg_fm_l), .dbg_fm_r(dbg_fm_r),
+		.dbg_oki1(dbg_oki1), .dbg_oki2(dbg_oki2)
+	);
 
 	ms1_video u_video (
 		.clk(clk), .ce(ce_pix), .reset(reset),

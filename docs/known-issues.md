@@ -35,6 +35,9 @@ closed by a measurement, never by reasoning.
 | MS1-25 | MAME persists a forced DIP into cfg/ and re-reads it forever | closed |
 | MS1-26 | A relative -rompath reads as a broken romset | closed |
 | MS1-27 | A held `valid` sampled per clock passes its own sanity check | closed |
+| MS1-28 | A fractional clock divider whose accumulator is one bit too narrow | closed |
+| MS1-29 | jt51 samples `write` on `cen`, so a one-clock strobe never raises `busy` | closed |
+| MS1-30 | `screen_flag` bit 4 is a reset line over the whole sound subsystem | closed |
 
 ---
 
@@ -689,3 +692,118 @@ sample `rgb`/`rgb_valid` on it. The wider lesson is the one MS1-20 and MS1-21
 taught in other forms: **a sanity check that can pass while the thing it
 guards is broken is worse than no check**, because it is evidence pointing the
 wrong way.
+
+
+---
+
+## MS1-28 — A fractional clock divider whose accumulator is one bit too narrow (closed)
+
+The sound 68000 runs at 7 MHz, which does not divide 48 MHz evenly, so
+`ms1_sound.sv` generates its phases with the usual fractional accumulator:
+
+```systemverilog
+reg [24:0] cpu_acc;
+...
+if (cpu_acc >= CLK_SYS[24:0] - (2 * CPU_HZ)) begin
+    cpu_acc <= cpu_acc - (CLK_SYS[24:0] - 25'd2 * CPU_HZ[24:0]);
+```
+
+The idiom is right and the arithmetic is right. The **width** is not.
+`CLK_SYS - 2*CPU_HZ` is 34,000,000, and 25 bits hold at most 33,554,431. The
+threshold silently truncated to 445,568, the accumulator cleared it on almost
+every clock, and `enPhi1` came out at about 23 MHz instead of 7.
+
+Everything downstream inherited the error: the YM2151's timers ran fast, and
+since megasys1.cpp:673 notes that the YM2151 clock is what decides the music
+tempo, the sound CPU wrote its registers 3.3x too often. Measured against
+MAME over 60 frames, the RTL issued 80 YM bus writes per frame against
+MAME's 24.
+
+What made this hard to see is that the divider still *looked* correct in
+steady state — the ratio argument (`14e6 * N = P * 48e6`) is sound, so
+re-reading the code proved nothing. It was settled by counting the enable
+pulses directly:
+
+```
+per frame: phi1=413837 ym_cen=206918 ym_cen_p1=103459 (expect 124544 / 62272 / 31136)
+```
+
+Widened to 27 bits the same counter reports `124544 / 62272 / 31136` exactly.
+
+The rule this leaves: **a fractional divider's accumulator must be wide enough
+for the clock constant itself**, not for the value it usually holds, and the
+cheapest possible check is to count the pulses per frame and compare against
+`rate * frame_period` before trusting anything built on top.
+
+## MS1-29 — jt51 samples `write` on `cen`, so a one-clock strobe never raises `busy` (closed)
+
+The sound CPU's writes were decoded into a single 48 MHz clock pulse per bus
+cycle. The YM2151 registers were programmed correctly by this — jt51's
+register block runs on the raw clock (`jt51_mmr.v:131`) — so the timers came
+out right and the write counts matched MAME frame for frame.
+
+`busy` did not. It is generated in a different block, gated on `cen`
+(`jt51_mmr.v:264`), which in this core is 1.75 MHz — roughly one pulse every
+27 clocks of `clk_sys`. A one-clock strobe is invisible to it, so `busy` never
+asserted, the status register never returned `0x80`, and the sound driver's
+busy-poll loop never waited.
+
+MAME, reading the same register over 60 frames, saw:
+
+```
+0000 143306   0001 1144   0080 1740
+```
+
+The RTL saw `0x0080` zero times. Tying the strobe to the bus cycle was not
+enough either: the 68000's data strobe is only about 10 clocks wide against a
+27-clock `cen` period, so it still missed roughly two times in three. Holding
+the strobe until one `cen_p1` has actually sampled it brought the RTL to
+`0080` x1968 against MAME's x1740.
+
+jt6295 is the opposite case — it edge-detects `wrn` on the full clock
+(`jt6295_ctrl.v:44`) — so the OKI strobes stay one cycle wide. **Two vendored
+chips in the same module, two different strobe requirements**; neither is
+documented in a port comment, and only reading the sampling clock of each
+individual block tells you which is which.
+
+## MS1-30 — `screen_flag` bit 4 is a reset line over the whole sound subsystem (closed)
+
+With the clock and the strobe fixed, the RTL matched MAME's YM writes
+**tick for tick** — 555 ticks against 555 through frame 51, including the
+irregular 13-tick frames at 12, 18 and 48. Then at frame 52 MAME stopped
+dead for seven frames and restarted with a full timer re-initialisation,
+while the RTL played straight on.
+
+Nothing in the sound CPU's own inputs explains that. The latch was checked
+and reads `0000` throughout; no interrupt is ever taken on either side (the
+driver runs at SR mask 7 and polls, and neither MAME nor the RTL ever fetches
+the vector at `0x70`); the OKIs are untouched in that window.
+
+The cause is on the *main* CPU's side, in a register that reads like a video
+one (`megasys1_v.cpp:253`):
+
+```cpp
+m_audiocpu->set_input_line(INPUT_LINE_RESET, BIT(m_screen_flag, 4) ? ASSERT_LINE : CLEAR_LINE);
+opm->reset_w(!BIT(m_screen_flag, 4));
+if (BIT(m_screen_flag, 4) && m_oki[0].found()) m_oki[0]->reset();
+```
+
+`screen_flag` bit 4 holds the sound 68000, the YM2151 and both OKIs in reset
+together. Games use it between tunes. Captured from MAME it is exactly the
+missing event:
+
+```
+frame 52 -> 1,  frame 53 -> 0
+```
+
+Replaying it at frame granularity reproduced the stop and the restart but left
+a constant 18-write offset, because MAME's write lands 651342 clocks into
+frame 52 rather than at its boundary. Logged with `manager.machine.time` —
+never `scr:vpos()`, which throws inside a memory tap (MS1-20) — and replayed
+on the same cycle, the RTL matches MAME on **every one of the first 60
+frames**, 1160 writes against 1160.
+
+The lesson is about where to look: three separate measurements confirmed the
+sound subsystem was internally correct, and the remaining difference was an
+input nobody had thought to model, sitting behind a register named after the
+screen.

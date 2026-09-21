@@ -10,6 +10,13 @@ cross-correlating band energies (within +-S seconds, default 1.0), and
 per-band energy correlation plus an overall similarity score are printed
 — the same spectral-envelope comparison used for the tdragon2/macross2
 sound bring-up (docs/hw-bringup.md).
+
+For MS1 M2 gate (4) this is run once per SOURCE, never on the mix:
+MAME is rendered with tools/mame-patches/megasys1-sound-isolation.patch
+(MS1_SND_ISO=fm|oki1|oki2) and the core with MS1_WAV, which dumps the FM
+and each OKI on its own tap. A mix number that looks like a uniform
+offset has already once hidden a large error in one source inside a
+correct one, on Sand Scorpion.
 """
 import sys, wave, struct
 import numpy as np

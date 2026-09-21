@@ -42,6 +42,9 @@ int main(int argc, char **argv) {
 	auto g0 = slurp(d + "/gfx0.bin"), g1 = slurp(d + "/gfx1.bin"), g2 = slurp(d + "/gfx2.bin", false);
 	auto srom = slurp(d + "/sprites.bin");
 	auto prom = slurp(d + "/prom.bin");
+	auto sndrom = slurp(d + "/audiocpu.bin");
+	auto ok1  = slurp(d + "/oki1.bin", false);
+	auto ok2  = slurp(d + "/oki2.bin", false);
 
 	Vms1bcd_core *top = new Vms1bcd_core;
 	top->mode = mode;
@@ -51,6 +54,7 @@ int main(int argc, char **argv) {
 	top->in_dsw2   = strtol(argv[7], nullptr, 16) & 0xFF;
 	top->in_system = strtol(argv[8], nullptr, 16) & 0xFF;
 	top->reset = 1; top->clk = 0; top->mcu_rom_we = 0;
+	top->oki_status_real = 0;   // MAME's default: oki_status_r returns 0
 
 	auto serve = [&]() {
 		unsigned ra = top->rom_addr * 2;
@@ -60,6 +64,10 @@ int main(int argc, char **argv) {
 		top->l2_rom_data = rd8(g2, top->l2_rom_addr);
 		top->spr_rom_data = rd8(srom, top->spr_rom_addr);
 		top->prom_data    = rd8(prom, top->prom_addr);
+		unsigned sa = top->srom_addr * 2;
+		top->srom_data = (sa + 1 < sndrom.size()) ? (sndrom[sa] << 8) | sndrom[sa + 1] : 0;
+		top->oki1_rom_data = rd8(ok1, top->oki1_rom_addr);
+		top->oki2_rom_data = rd8(ok2, top->oki2_rom_addr);
 		top->eval();
 	};
 	auto tick = [&]() {
@@ -97,7 +105,7 @@ int main(int argc, char **argv) {
 		if (top->vblank_rise && getenv("MS1_REGS"))
 			fprintf(stderr, "frame regs: act=%04X t0c=%04X t1c=%04X t2c=%04X t0x=%04X t0y=%04X vramw=%u\n",
 			        top->dbg_active, top->dbg_t0c, top->dbg_t1c, top->dbg_t2c, top->dbg_t0x, top->dbg_t0y, top->dbg_vramw),
-			fprintf(stderr, "   scf=%04X palnz=%u opq0=%u opq2=%u\n", top->dbg_scf, top->dbg_palnz, top->dbg_opaque0, top->dbg_opaque2);
+			fprintf(stderr, "   ym=%u oki1=%u oki2=%u\n", top->dbg_ym_writes, top->dbg_oki1_writes, top->dbg_oki2_writes);
 		if (top->vblank_rise && getenv("MS1_REGS"))
 			fprintf(stderr, "   mcu: irq2=%u int1edges=%u\n", top->dbg_irq2, top->dbg_int1e), fprintf(stderr, "   mcuacc=%u bank!=0=%u\n", top->dbg_mcuacc, top->dbg_mcubank);
 		if (top->vblank_rise) {

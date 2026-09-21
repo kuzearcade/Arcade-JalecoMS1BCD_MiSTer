@@ -95,6 +95,11 @@ module ms1_main (
 	output reg  [23:0]  dbg_ramw_addr,
 	output reg  [15:0]  dbg_ramw_data,
 	output reg          dbg_ramw,
+	// sound latch out: one pulse per main-CPU write to the sound latch
+	// (044308 on System B, 0C8000 on System C), carrying the command.
+	output reg          slatch_we,
+	output reg  [15:0]  slatch_data,
+
 	output reg  [31:0]  dbg_acc, dbg_vregw, dbg_vramw,
 	output reg  [31:0]  dbg_irq2, dbg_int1e,
 	output reg  [31:0]  dbg_mcuacc, dbg_mcubank
@@ -328,6 +333,15 @@ module ms1_main (
 			if (mcu_dbg_rd) dbg_mcuacc <= dbg_mcuacc + 1;
 			if (mcu_dbg_rd && mcu_dbg_bank != 4'd0) dbg_mcubank <= dbg_mcubank + 1;
 		end
+	end
+
+	wire sel_slatch = is_c ? (a >= 24'h0C8000 && a < 24'h0C8002)
+	                       : (a >= 24'h044308 && a < 24'h04430A);
+	reg slatch_d;
+	always @(posedge clk) begin
+		slatch_d  <= we & sel_slatch;
+		slatch_we <= (we & sel_slatch) & ~slatch_d;
+		if ((we & sel_slatch) & ~slatch_d) slatch_data <= wdat;
 	end
 
 	// --------------------------------------------------- interrupt timer

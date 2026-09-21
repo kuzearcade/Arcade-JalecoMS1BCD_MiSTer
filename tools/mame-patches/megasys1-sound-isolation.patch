@@ -1,0 +1,48 @@
+diff --git a/src/mame/jaleco/megasys1.cpp b/src/mame/jaleco/megasys1.cpp
+index a25611c2525..2d71c87bc89 100644
+--- a/src/mame/jaleco/megasys1.cpp
++++ b/src/mame/jaleco/megasys1.cpp
+@@ -1926,18 +1926,37 @@ void megasys1_state::system_base(machine_config &config)
+ 	GENERIC_LATCH_16(config, m_soundlatch[0]);
+ 	GENERIC_LATCH_16(config, m_soundlatch[1]);
+ 
++	// LOCAL DIAGNOSTIC PATCH (Arcade-JalecoMS1BCD_MiSTer, M2 gate 4).
++	// Not for upstream. MS1_SND_ISO routes one sound source at a time so each
++	// can be correlated against the core on identical content; the OKIs in
++	// particular are used so sparsely (21 writes in 2400 frames on avspirit)
++	// that they are invisible in the mix.
++	//   MS1_SND_ISO=fm     YM2151 only
++	//   MS1_SND_ISO=oki1   OKI #1 only
++	//   MS1_SND_ISO=oki2   OKI #2 only
++	//   unset              stock behaviour
++	const char *ms1_iso = getenv("MS1_SND_ISO");
++	const bool ms1_fm   = ms1_iso && strcmp(ms1_iso, "fm")   == 0;
++	const bool ms1_ok1  = ms1_iso && strcmp(ms1_iso, "oki1") == 0;
++	const bool ms1_ok2  = ms1_iso && strcmp(ms1_iso, "oki2") == 0;
++	const bool ms1_any  = ms1_fm || ms1_ok1 || ms1_ok2;
++
++	const double ms1_ym_g = (!ms1_any || ms1_fm)  ? 0.80 : 0.0;
++	const double ms1_o1_g = (!ms1_any || ms1_ok1) ? 0.30 : 0.0;
++	const double ms1_o2_g = (!ms1_any || ms1_ok2) ? 0.30 : 0.0;
++
+ 	ym2151_device &ymsnd(YM2151(config, "ymsnd", SOUND_CPU_CLOCK/2)); /* 3.5MHz (7MHz / 2) verified */
+ 	ymsnd.irq_handler().set(FUNC(megasys1_state::sound_irq));
+-	ymsnd.add_route(0, "speaker", 0.80, 0);
+-	ymsnd.add_route(1, "speaker", 0.80, 1);
++	ymsnd.add_route(0, "speaker", ms1_ym_g, 0);
++	ymsnd.add_route(1, "speaker", ms1_ym_g, 1);
+ 
+ 	OKIM6295(config, m_oki[0], OKI4_SOUND_CLOCK, okim6295_device::PIN7_HIGH); /* 4MHz verified */
+-	m_oki[0]->add_route(ALL_OUTPUTS, "speaker", 0.30, 0);
+-	m_oki[0]->add_route(ALL_OUTPUTS, "speaker", 0.30, 1);
++	m_oki[0]->add_route(ALL_OUTPUTS, "speaker", ms1_o1_g, 0);
++	m_oki[0]->add_route(ALL_OUTPUTS, "speaker", ms1_o1_g, 1);
+ 
+ 	OKIM6295(config, m_oki[1], OKI4_SOUND_CLOCK, okim6295_device::PIN7_HIGH); /* 4MHz verified */
+-	m_oki[1]->add_route(ALL_OUTPUTS, "speaker", 0.30, 0);
+-	m_oki[1]->add_route(ALL_OUTPUTS, "speaker", 0.30, 1);
++	m_oki[1]->add_route(ALL_OUTPUTS, "speaker", ms1_o2_g, 0);
++	m_oki[1]->add_route(ALL_OUTPUTS, "speaker", ms1_o2_g, 1);
+ }
+ 
+ void megasys1_typea_state::system_A(machine_config &config)
