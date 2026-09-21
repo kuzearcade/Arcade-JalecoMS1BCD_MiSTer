@@ -354,6 +354,12 @@ int main(int argc, char **argv) {
 				// bisection pointed at -- could differ while it reported
 				// "game state is identical".
 				std::vector<uint16_t> sc;
+				// fx68k's own internals. The park monitor reconstructs only the
+				// programmer's model; anything the CPU holds beyond that is
+				// neither carried by the image nor visible from outside. This
+				// is the measurement that says WHICH of it matters, before any
+				// vendored core gets modified.
+				std::vector<uint16_t> cpu;
 			};
 			auto grab = [&](Snap &sn) {
 				auto cp = [](auto &src, size_t n) {
@@ -386,6 +392,19 @@ int main(int argc, char **argv) {
 					(uint16_t)R->ms1bcd_core__DOT__vcount,
 					(uint16_t)R->ms1bcd_core__DOT__pdiv,
 				};
+				// Written out in full: a macro ending in __ does not paste onto
+				// the next token, it just expands with a space.
+				sn.cpu.clear();
+				for (int i = 0; i < 18; i++) {
+					sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__regs68L[i]);
+					sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__regs68H[i]);
+				}
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__PcL);
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__PcH);
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__Irc);
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__Ir);
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__Ird);
+				sn.cpu.push_back((uint16_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__intPend);
 			};
 			const unsigned rmask = (unsigned)envl("MS1_SS_RST", 0);
 			auto pulse_rst = [&]() {
@@ -456,6 +475,20 @@ int main(int argc, char **argv) {
 			static const char *scn[] = {"irq1_h","irq2_h","irq4_h","iack_d",
 			                            "int1_dd","bufi","buf_busy",
 			                            "hcount","vcount","pdiv"};
+			static const char *rn[18] = {"D0","D1","D2","D3","D4","D5","D6","D7",
+			                             "A0","A1","A2","A3","A4","A5","A6",
+			                             "SSP","USP","r17"};
+			for (size_t i = 0; i < A.cpu.size(); i++)
+				if (A.cpu[i] != B.cpu[i]) {
+					char nm[32];
+					if (i < 36) snprintf(nm, sizeof nm, "%s%s", rn[i / 2], (i & 1) ? "(hi)" : "(lo)");
+					else {
+						static const char *ex[] = {"PcL","PcH","Irc","Ir","Ird","intPend"};
+						snprintf(nm, sizeof nm, "%s", ex[i - 36]);
+					}
+					printf("    fx68k  %-10s A=%04X  B=%04X\n", nm, A.cpu[i], B.cpu[i]);
+					t++;
+				}
 			for (size_t i = 0; i < A.sc.size(); i++)
 				if (A.sc[i] != B.sc[i]) {
 					printf("    scalar %-9s A=%04X  B=%04X\n", scn[i], A.sc[i], B.sc[i]);

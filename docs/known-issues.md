@@ -996,11 +996,49 @@ restoring SSP/USP, returning through RTE; anything fx68k holds that is not in
 the programmer's model is not carried, and cannot be observed from outside
 either.
 
-**The honest next step is not another guess.** It is to give fx68k itself a
-savestate interface, as the TLCS-90 already has -- 16 words exposing its
-registers directly -- so the image carries the CPU rather than reconstructing
-it through a monitor. That is a change to a vendored core, which is why it was
-avoided, and it is now the only remaining candidate.
+### fx68k's internals, read directly: it is a SKEW, not missing state
+
+Rather than modify a vendored core on a hypothesis, fx68k's internals were
+compared between the two spans through Verilator: all 18 register-file entries
+(high and low), `PcL`/`PcH`, the `Irc`/`Ir`/`Ird` prefetch pipeline and
+`intPend`, the CPU's own interrupt-pending latch.
+
+```
+K=1   USP(lo) A=FFBA B=FF78    PcL A=1584 B=10EA
+K=2   USP(lo) A=FFBA B=0000    USP(hi) A=0007 B=0008   PcL A=2B84 B=26F6
+K=3   D0(lo)  A=0000 B=0006    USP(lo) A=FFBA B=FF78   PcL A=4184 B=3CEC
+K=4   + wram 98 words, vram2 2 words, Irc/Ir/Ird
+```
+
+Read carefully, this is not a missing-state signature:
+
+- **Memory is identical at K=1, 2 and 3.** Both runs are doing the same work.
+- `PcL` differs at every K, but that is the PC sampled at an arbitrary raster
+  instant. Two runs one instruction apart show different PCs and mean nothing
+  by it.
+- `USP` differs, and A holds `FFBA` **constant** across all three. A user stack
+  pointer that never moves means the game never leaves supervisor mode, so USP
+  is a dead register here, not a cause.
+- The register file, `intPend` and the prefetch all match until frame 4.
+
+So the two runs are executing the same code, displaced in time, until at frame
+4 an interrupt lands on the other side of some boundary and the paths genuinely
+part. **The image is not missing a register; the resume does not land on the
+same cycle.**
+
+That is consistent with everything else this issue has recorded, and it
+explains why seven fixes that added or corrected captured state changed the
+result by exactly zero pixels: none of them addressed timing.
+
+**Where the skew can come from**, now that state is excluded: the park monitor
+takes a variable number of cycles between the `RESUME` write and its `RTE`,
+because it exits through a `tst.w`/`beq` polling loop whose alignment depends
+on when RESUME is seen. The raster is restored, and the CPU's own clock phase
+is restored, but the number of cycles the monitor itself burns on the way out
+is not necessarily equal in the two runs.
+
+Testing that means instrumenting the park module to count cycles from RESUME
+to RTE and comparing the two spans -- a measurement, not another fix.
 
 ### Found while chasing it: the park's acknowledge ate a game interrupt
 
