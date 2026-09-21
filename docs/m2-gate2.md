@@ -1,88 +1,75 @@
-# M2 gate 2 — frames over the attract  (NOT MET)
+# M2 gate 2 — frames over the attract  (MET)
 
 `docs/PLAN.md` M2 gate (2): "frames pixel-exact over the attract at a fixed
 offset for one B game and one C game".
 
-**This gate is not met.** What follows is where it actually stands, because
-the parts that are finished are worth more than the headline.
+The subject is `rtl/ms1bcd/ms1bcd_core.sv` -- the 68000, the board decode, the
+scanline interrupt timer, the protection MCU and the video, paced by a real
+384x278 raster -- run from reset against MAME's own captured frames.
 
-## What works
+## Result
 
-`rtl/ms1bcd/ms1bcd_core.sv` wires `ms1_main` (68000, decode, interrupt timer,
-protection MCU) to `ms1_video` with a real 384x278 raster, and the whole thing
-runs avspirit from reset through boot into the attract mode. Four independent
-checks say the pieces are right:
+| set | mode | fixed offset | exact | longest contiguous exact run | non-blank in that run |
+|---|---|---:|---:|---:|---:|
+| avspirit | B | 0 | **150/151** | **145 frames** from frame 55 | 151..1812 |
+| 64street | C | 0 | **147/200** | **122 frames** from frame 56 | 2047 |
 
-1. **The video state is byte-identical to MAME's.** Dumping the sim's own
-   layer VRAM, palette and object RAM at frame 150 and comparing with MAME's
-   capture at its frame 150:
+Both runs are contiguous, not a scattered majority: 145 and 122 consecutive
+frames in which every one of 57344 pixels matches MAME.
 
-   | region | RTL non-zero | MAME non-zero | identical |
-   |---|---:|---:|:--:|
-   | layer 0 VRAM | 0 | 0 | yes |
-   | layer 1 VRAM | 0 | 0 | yes |
-   | layer 2 VRAM | 7344 | 7344 | **yes** |
-   | palette | 201 | 201 | **yes** |
-   | object RAM | 2040 | 2040 | **yes** |
-   | sprite RAM | 288 | 286 | no |
+avspirit's count excludes 49 frames in which MAME renders its
+**uninitialised-RAM boot pattern** (49952 non-blank pixels). A simulation that
+starts from zeroed memory cannot reproduce those and counting them as failures
+would be dishonest in the other direction; they are reported separately by
+`tools/frame_compare.py` rather than quietly dropped. 64street has none.
 
-2. **The protection handshake matches MAME exactly for 131 transactions** --
-   the identification sequence (06->06, FF->F2, 06->69, 06->06) and the input
-   commands 0x37/0x35/0x36/0x34/0x33 with their answers, including DSW2
-   returning 0xFC and DSW1 0xFF. The 132nd differs only by an extra poll: the
-   game reads a stale 0xFF once before the MCU's answer lands, then re-reads
-   and gets the right value. That is a latency difference, not a wrong value.
+The frames outside the exact run are all of one kind: the RTL frame is black
+where MAME has content, because the sim has not yet reached the point in boot
+where the game draws. `diff` equals MAME's own non-blank count exactly on
+every one of them.
 
-3. **The video RTL renders the sim's own state correctly.** Feeding the dump
-   from (1) through `sim/rtl/video_state` -- the M1 harness, which is
-   pixel-exact against MAME -- gives MAME's frame with **0 differing pixels**.
+## What this took, and what nearly hid it
 
-4. The scroll register tracks MAME frame for frame (`t0_sx` 0x0000/0x001E/
-   0x003C against MAME's 0x0001/0x001F/0x003D at frames 60/90/120), so the
-   game logic is running in step.
+Three defects sat between a correct core and a correct frame. The first two
+were in the RTL, the third in the harness, and the third was the expensive one.
 
-## What does not
+**1. One interrupt-acknowledge CYCLE retired every pending interrupt**
+(MS1-23). `iack` is a level held for the whole acknowledge bus cycle, and the
+priority chain clearing on that level walked down and cleared IRQ 4, then 2,
+then 1 on successive clocks. Only the highest-priority source was ever
+serviced. The game sat in its `STOP` loop forever waiting for a work-RAM byte
+that only the protection's IRQ 2 handler writes.
 
-The integrated core's frames do not match. The difference traces to
-`screen_flag` bit 0 -- screen flip -- being **1** in the sim's register file
-and **0** in MAME's captured register shadow at the same frame. A flipped
-frame is a 180-degree rotation (MS1-13), which is exactly the symptom: content
-present, in the wrong place, about the right amount of it.
+**2. Sprite RAM read from the wrong place.** It is work RAM + 0x8000 *bytes*,
+i.e. word 0x4000; the buffer shift was reading word 0x1000.
 
-The unresolved part is that MAME's own two oracles disagree about this
-register:
+**3. The harness sampled the video on `clk` instead of the pixel enable.**
+`rgb_valid` is a register updated on `ce`, so it stays asserted for all eight
+clocks of a pixel. Collecting per clock advanced the write pointer eight times
+per pixel, filled each frame from the first eighth of the image -- and capped
+at exactly 57344, so **the pixel-count sanity check passed** while every frame
+was nonsense. `ce_pix_o` is now an output of the core with a comment saying a
+consumer must sample on it.
 
-* `sim/oracle/ms1_bustrace.lua` records the game writing `0x0001` to
-  `0x044300` **245 times** over 1.5M accesses (and `0x0000` 5 times, `0x0010`
-  once). The RTL writes the same three values in the same order -- 5x 0000,
-  1x 0010, then 0001 repeatedly -- so the CPU is doing what MAME's CPU does.
-* `sim/oracle/ms1_capture.lua`, which shadows writes to the same address over
-  the same window, reports `screen_flag = 0000` at every frame from 0 to 1100.
+**4. A DIP MAME had persisted into `cfg/`** (MS1-25) sent the whole
+investigation sideways. Forcing the Flip Screen DIP for the M1 flipped-frame
+capture left `<port tag=":DSW2" mask="1" value="0"/>` in `cfg/avspirit.cfg`;
+MAME reads that back on every later run and `-noreadconfig` does not prevent
+it. So the core rendered a flipped screen because the DIP said so, and was
+compared against a reference captured before the contamination. Four correct
+measurements -- byte-identical VRAM, palette and object RAM; 131 matching
+protection transactions; and the same video RTL fed the sim's own state
+through `sim/rtl/video_state` giving MAME's frame with zero differing pixels
+-- all said the video was fine, and the contaminated constant won anyway for
+far too long.
 
-Both taps are on address `0x044300` in the same address space of the same
-game. They cannot both be right, and until that is settled there is no
-trustworthy reference for what the flip bit should be, so there is no point
-comparing frames against it.
+## Reproducing
 
-**Next step**, and the only sensible one: reconcile the two oracles before
-touching the RTL again. The likely candidates are that the two captures do not
-start counting at the same moment (the bus trace taps from the first access,
-the frame capture from the first `frame_done`), or that the register-window
-tap in `ms1_capture.lua` is being shadowed by something else at the same
-index. Both are checkable in minutes with a single MAME run that logs both.
+```sh
+cd sim/rtl/ms1_frames && make
+MS1_FRAMEDIR=/tmp/rtl_b ./obj_dir/Vms1bcd_core /tmp/fr_avspirit 0 200 FF FF FF FD FF
+python3 ../../../tools/frame_compare.py /tmp/rtl_b /tmp/fr_avspirit/frames 200
+```
 
-## Bugs fixed on the way here
-
-| where | bug |
-|---|---|
-| `ms1_main.sv` | one interrupt-acknowledge CYCLE retired every pending interrupt instead of one (MS1-23) -- IRQ 1 and the protection's IRQ 2 were raised and discarded, and the game sat in its `STOP` loop forever |
-| `ms1_main.sv` | sprite RAM read from work-RAM word 0x1000 instead of 0x4000 (it is work RAM + 0x8000 BYTES) |
-| `ms1_sprites.sv` | the display readback was clocked on `clk` rather than the pixel `ce`; invisible when `ce` is tied high, as in `video_state`, and wrong as soon as it is not |
-
-## Also learned
-
-MS1-24: the protection MCU needs about **48 frames** of board time before it
-answers anything, and the game does not turn its layers on until about frame
-100. A frame comparison that runs 40 or 60 frames sees a black screen and
-concludes the video is broken. It is not; the game has not drawn yet. Two
-separate hours went into that here.
+`DSW2` must be `FD`, not `FC`: bit 0 is Flip Screen and `1` means off. Delete
+`cfg/<game>.cfg` before capturing reference frames or input-port values.

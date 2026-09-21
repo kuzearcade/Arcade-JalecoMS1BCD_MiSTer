@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
 		if (top->vblank_rise && getenv("MS1_REGS"))
 			fprintf(stderr, "frame regs: act=%04X t0c=%04X t1c=%04X t2c=%04X t0x=%04X t0y=%04X vramw=%u\n",
 			        top->dbg_active, top->dbg_t0c, top->dbg_t1c, top->dbg_t2c, top->dbg_t0x, top->dbg_t0y, top->dbg_vramw),
-			fprintf(stderr, "   scf=%04X sf=%04X sb=%04X\n", top->dbg_scf, top->dbg_sf, top->dbg_sb);
+			fprintf(stderr, "   scf=%04X palnz=%u opq0=%u opq2=%u\n", top->dbg_scf, top->dbg_palnz, top->dbg_opaque0, top->dbg_opaque2);
 		if (top->vblank_rise && getenv("MS1_REGS"))
 			fprintf(stderr, "   mcu: irq2=%u int1edges=%u\n", top->dbg_irq2, top->dbg_int1e), fprintf(stderr, "   mcuacc=%u bank!=0=%u\n", top->dbg_mcuacc, top->dbg_mcubank);
 		if (top->vblank_rise) {
@@ -99,7 +99,14 @@ int main(int argc, char **argv) {
 			std::fill(cur.begin(), cur.end(), 0);
 			px = 0;
 		}
-		if (top->rgb_valid && px < cur.size()) cur[px++] = top->rgb & 0xFFFFFF;
+		// Sample ONLY on the pixel enable. rgb_valid is a register updated on
+		// ce and therefore HOLDS across all eight clocks of a pixel; collecting
+		// per clock advances the write pointer eight times per pixel, fills the
+		// frame from the first eighth of the image and caps at exactly the
+		// right total -- so even the pixel count looks correct while the frame
+		// is nonsense.
+		if (top->ce_pix_o && top->rgb_valid && px < cur.size())
+			cur[px++] = top->rgb & 0xFFFFFF;
 	}
 	printf("captured %zu frames\n", frames.size());
 

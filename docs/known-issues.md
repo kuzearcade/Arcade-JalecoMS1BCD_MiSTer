@@ -34,6 +34,7 @@ closed by a measurement, never by reasoning.
 | MS1-24 | The protection MCU needs ~48 frames of boot before it answers | closed |
 | MS1-25 | MAME persists a forced DIP into cfg/ and re-reads it forever | closed |
 | MS1-26 | A relative -rompath reads as a broken romset | closed |
+| MS1-27 | A held `valid` sampled per clock passes its own sanity check | closed |
 
 ---
 
@@ -658,3 +659,33 @@ neither -- the zips are present and intact.
 
 `tools/run_oracle_captures.sh` now derives an absolute `ROMS` from its own
 location. Any new script should do the same rather than assuming a cwd.
+
+## MS1-27 — A held `valid` sampled per clock passes its own sanity check (closed)
+
+`ms1_video` emits one pixel per `ce`, and `ce` is one clock in eight. Its
+`rgb_valid` is a REGISTER updated on `ce`, so it stays asserted across all
+eight clocks of a pixel. The frame harness collected per clock:
+
+```cpp
+if (top->rgb_valid && px < cur.size()) cur[px++] = top->rgb;
+```
+
+which advanced the write pointer eight times per pixel and filled each frame
+from the first eighth of the image.
+
+The reason this survived so long is the shape of the failure. The collector
+stops at `cur.size()`, so the per-frame pixel count came out at **exactly
+57344** -- the right answer -- and the check written specifically to catch this
+class of bug reported success every frame. Meanwhile a probe inside the core
+counting emitted non-black pixels showed **1812 per frame**, exactly MAME's
+figure, which is what finally made it clear the video was right and the
+measurement was wrong.
+
+Gated on the pixel enable, the same run went from 5 exact frames to 117, and
+to 150 of 151 once the DIP of MS1-25 was also corrected.
+
+The core now exposes `ce_pix_o` with a comment stating that a consumer must
+sample `rgb`/`rgb_valid` on it. The wider lesson is the one MS1-20 and MS1-21
+taught in other forms: **a sanity check that can pass while the thing it
+guards is broken is worse than no check**, because it is evidence pointing the
+wrong way.

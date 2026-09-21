@@ -36,6 +36,9 @@ module ms1bcd_core (
 	output              vblank_rise,
 	output       [8:0]  vcount_o,
 	output       [8:0]  hcount_o,
+	output              ce_pix_o,   // one tick per pixel; a consumer MUST
+	                                // sample rgb/rgb_valid on this, not on clk
+
 
 	// probes for the frame harness
 	output      [15:0]  dbg_active, dbg_t0c, dbg_t1c, dbg_t2c,
@@ -46,7 +49,8 @@ module ms1bcd_core (
 	output      [23:0]  tr_addr,
 	output      [15:0]  tr_data,
 	output              tr_we, tr_valid,
-	output      [31:0]  dbg_irq2, dbg_int1e, dbg_mcuacc, dbg_mcubank
+	output      [31:0]  dbg_irq2, dbg_int1e, dbg_mcuacc, dbg_mcubank,
+	output reg  [31:0]  dbg_palnz, dbg_opaque0, dbg_opaque2
 );
 	// ---------------------------------------------------------- raster
 	reg [2:0] pdiv;
@@ -66,6 +70,7 @@ module ms1bcd_core (
 	end
 	assign vcount_o = vcount;
 	assign hcount_o = hcount;
+	assign ce_pix_o = ce_pix;
 
 	wire vtick = ce_pix & (hcount == 9'd383);
 	assign vblank_rise = vtick & (vcount == 9'd239);   // entering line 240
@@ -121,6 +126,18 @@ module ms1bcd_core (
 	// shifted so it draws the frame the hardware would show next.
 	reg spr_start;
 	always @(posedge clk) spr_start <= vblank_rise;
+
+	// count non-black pixels actually emitted, plus per-layer opacity: tells
+	// a black screen caused by "nothing opaque" from one caused by "every
+	// opaque pixel maps to palette entry 0".
+	always @(posedge clk) begin
+		if (reset) begin dbg_palnz <= 0; dbg_opaque0 <= 0; dbg_opaque2 <= 0; end
+		else if (ce_pix) begin
+			if (rgb_valid && rgb != 24'd0) dbg_palnz <= dbg_palnz + 1;
+			if (u_video.o0) dbg_opaque0 <= dbg_opaque0 + 1;
+			if (u_video.o2) dbg_opaque2 <= dbg_opaque2 + 1;
+		end
+	end
 
 	ms1_video u_video (
 		.clk(clk), .ce(ce_pix), .reset(reset),
