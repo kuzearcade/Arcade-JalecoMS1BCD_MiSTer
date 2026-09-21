@@ -104,6 +104,13 @@ module ms1bcd_core #(
 	output      [15:0]  dbg_spr_late_swaps,
 	output reg  [31:0]  dbg_palnz, dbg_opaque0, dbg_opaque2
 );
+	// The whole savestate window: park, stream, resume. Holding only during
+	// ss_active left the raster free to advance while the CPU ran its park
+	// monitor, and the monitor's exit is not cycle-identical between a save
+	// and a restore -- so the game resumed at a different point in the frame
+	// than it was saved at. See MS1-33.
+	wire ss_hold = ss_freeze | ss_active | ss_resume;
+
 	// ---------------------------------------------------------- raster
 	reg [2:0] pdiv;
 	reg [8:0] hcount, vcount;
@@ -114,9 +121,8 @@ module ms1bcd_core #(
 	always @(posedge clk) begin
 		ce_pix <= 1'b0;
 		if (reset) begin pdiv <= 3'd0; hcount <= 9'd0; vcount <= 9'd0; end
-		else if (ss_active & ~(ss_wr & ss_ras)) begin
-			// Held: the image takes most of a frame to stream, so a raster
-			// left running would overrun whatever was just restored into it.
+		else if (ss_hold & ~(ss_wr & ss_ras)) begin
+			// Held for the whole window, not just the transfer.
 			pdiv <= pdiv; hcount <= hcount; vcount <= vcount;
 		end
 		else if (ss_active & ss_wr & ss_ras) begin
@@ -160,7 +166,7 @@ module ms1bcd_core #(
 		.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_main_rdata),
-		.ss_rst_dbg(ss_rst_dbg[2:1]),
+		.ss_rst_dbg(ss_rst_dbg[2:1]), .ss_hold(ss_hold),
 		.ss_freeze(ss_freeze), .ss_resume(ss_resume),
 		.ss_m68k_parked(ss_m68k_parked), .ss_mcu_frozen(ss_mcu_frozen),
 		.mcu_rom_addr(mcu_rom_addr), .mcu_rom_data(mcu_rom_data),
@@ -227,7 +233,7 @@ module ms1bcd_core #(
 		.oki_status_real(oki_status_real),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_snd_rdata),
-		.ss_freeze(ss_freeze), .ss_resume(ss_resume),
+		.ss_freeze(ss_freeze), .ss_resume(ss_resume), .ss_hold(ss_hold),
 		.ss_parked(ss_snd_parked),
 		.ss_replay(ss_replay), .ss_replay_done(ss_replay_done),
 		.latch_we(slatch_we), .latch_data(slatch_data), .latch_to_main(),

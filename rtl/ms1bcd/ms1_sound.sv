@@ -71,6 +71,7 @@ module ms1_sound (
 	output              ss_parked,
 	input               ss_replay,
 	output reg          ss_replay_done,
+	input               ss_hold,
 
 	output reg  [31:0]  dbg_ym_writes, dbg_oki1_writes, dbg_oki2_writes,
 	output      [23:0]  dbg_addr,
@@ -120,7 +121,7 @@ module ms1_sound (
 	// straight on the gate (3) write counts.
 	reg [1:0] ymdiv;
 	always @(posedge clk) if (reset) ymdiv <= 2'd0;
-		else if (ss_active) ymdiv <= ymdiv;
+		else if (ss_hold) ymdiv <= ymdiv;
 		else if (enPhi1) ymdiv <= ymdiv + 2'd1;
 	wire ym_cen    = enPhi1 & (ymdiv[0] == 1'b1);
 	wire ym_cen_p1 = enPhi1 & (ymdiv    == 2'd3);
@@ -131,7 +132,7 @@ module ms1_sound (
 	always @(posedge clk) begin
 		oki_cen <= 1'b0;
 		if (reset) okidiv <= 4'd0;
-		else if (ss_active) okidiv <= okidiv;
+		else if (ss_hold) okidiv <= okidiv;
 		else if (okidiv == 4'd11) begin okidiv <= 4'd0; oki_cen <= 1'b1; end
 		else okidiv <= okidiv + 4'd1;
 	end

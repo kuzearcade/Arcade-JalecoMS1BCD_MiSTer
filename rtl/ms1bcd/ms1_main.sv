@@ -116,6 +116,7 @@ module ms1_main (
 	input               ss_freeze,
 	input               ss_resume,
 	input        [1:0]  ss_rst_dbg,   // bit 0 (of this slice) = MCU
+	input               ss_hold,      // the whole savestate window
 	output              ss_m68k_parked,
 	output              ss_mcu_frozen,
 
@@ -415,6 +416,11 @@ module ms1_main (
 	always @(posedge clk) begin
 		if (reset) mdiv <= 3'd0;
 		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd3)) mdiv <= ss_wdata[2:0];
+		// NOT ss_hold: the MCU has to keep running through the park phase to
+		// reach an instruction boundary, or ss_mcu_frozen never asserts and
+		// the park deadlocks. Only things that do not gate parking may be held
+		// for the whole window. Its position is restored from the image
+		// anyway, so what it advances during a park is undone.
 		else if (ss_active) mdiv <= mdiv;
 		else mdiv <= (mdiv == mdiv_max) ? 3'd0 : mdiv + 3'd1;
 	end
