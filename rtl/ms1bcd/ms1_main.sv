@@ -66,10 +66,38 @@ module ms1_main (
 	output reg          tr_we,
 	output reg          tr_valid,
 
+	// ---- video-side read ports (the CPU owns these memories; the video
+	// only ever reads them, so one extra read port each is enough)
+	input       [12:0]  v0_rd_addr, v1_rd_addr, v2_rd_addr,
+	output reg  [15:0]  v0_rd_data, v1_rd_data, v2_rd_data,
+	input        [9:0]  pal_rd_addr,
+	output reg  [15:0]  pal_rd_data,
+
+	// Object and sprite RAM as the VIDEO sees them: TWO frames behind the
+	// CPU. megasys1_v.cpp's screen_vblank does buffer2 <- buffer <- live
+	// every vblank and draw_sprites reads buffer2, so the sprites on screen
+	// are those the CPU wrote two frames ago. Sprite RAM is not a named
+	// region at all -- it is work RAM + 0x8000 (&m_ram[0x8000/2]).
+	input               vbl_rise,      // one pulse at the start of vblank
+	input       [11:0]  obj_rd_addr,
+	output reg  [15:0]  obj_rd_data,
+	input       [11:0]  spr_rd_addr,
+	output reg  [15:0]  spr_rd_data,
+
+	// video registers, decoded for the video block
+	output      [15:0]  reg_active_layers, reg_sprite_flag,
+	output      [15:0]  reg_sprite_bank,   reg_screen_flag,
+	output      [15:0]  reg_t0_sx, reg_t0_sy, reg_t0_ctrl,
+	output      [15:0]  reg_t1_sx, reg_t1_sy, reg_t1_ctrl,
+	output      [15:0]  reg_t2_sx, reg_t2_sy, reg_t2_ctrl,
+
 	// probes
 	output reg  [23:0]  dbg_ramw_addr,
 	output reg  [15:0]  dbg_ramw_data,
-	output reg          dbg_ramw
+	output reg          dbg_ramw,
+	output reg  [31:0]  dbg_acc, dbg_vregw, dbg_vramw,
+	output reg  [31:0]  dbg_irq2, dbg_int1e,
+	output reg  [31:0]  dbg_mcuacc, dbg_mcubank
 );
 	// ------------------------------------------------------- 68000 clocking
 	// enPhi1/enPhi2 must strictly alternate; fx68k wedges mid-cycle otherwise.
@@ -186,6 +214,63 @@ module ms1_main (
 		end
 	end
 
+	// ---- video read ports.
+	// COMBINATIONAL on purpose: ms1_tilemap and ms1_sprites register their
+	// ADDRESS and expect the data in the following cycle, which is the bus
+	// convention the whole video block was verified against in
+	// sim/rtl/video_state. Making these registered instead would insert a
+	// second cycle of latency and quietly shift every fetch by one.
+	// (On hardware these become M10K reads with the same one-cycle shape.)
+	always @* begin
+		v0_rd_data  = vr0[v0_rd_addr];
+		v1_rd_data  = vr1[v1_rd_addr];
+		v2_rd_data  = vr2[v2_rd_addr];
+		pal_rd_data = pal[pal_rd_addr];
+	end
+
+	// ---- the two-deep object/sprite buffers
+	reg [15:0] obj_b1 [0:4095];
+	reg [15:0] obj_b2 [0:4095];
+	reg [15:0] spr_b1 [0:4095];
+	reg [15:0] spr_b2 [0:4095];
+	reg [12:0] bufi;
+	reg        buf_busy;
+	always @(posedge clk) begin
+		if (reset) begin buf_busy <= 1'b0; bufi <= 13'd0; end
+		else if (vbl_rise) begin buf_busy <= 1'b1; bufi <= 13'd0; end
+		else if (buf_busy) begin
+			obj_b2[bufi[11:0]] <= obj_b1[bufi[11:0]];
+			obj_b1[bufi[11:0]] <= obj[bufi[11:0]];
+			spr_b2[bufi[11:0]] <= spr_b1[bufi[11:0]];
+			// sprite RAM is work RAM + 0x8000, i.e. word 0x4000 upwards
+			// sprite RAM is work RAM + 0x8000 BYTES, i.e. word 0x4000
+			spr_b1[bufi[11:0]] <= wram[15'h4000 + {3'd0, bufi[11:0]}];
+			if (bufi == 13'd4095) buf_busy <= 1'b0;
+			else bufi <= bufi + 13'd1;
+		end
+	end
+	always @* begin
+		obj_rd_data = obj_b2[obj_rd_addr];
+		spr_rd_data = spr_b2[spr_rd_addr];
+	end
+
+	// ---- video registers, at their System B offsets (the harness feeds
+	// System C's addresses through the same array, since vreg is indexed by
+	// the low bits of whichever window the mode decoded)
+	assign reg_active_layers = is_c ? vreg[9'h104] : vreg[9'h000];
+	assign reg_sprite_flag   = is_c ? vreg[9'h100] : vreg[9'h080];
+	assign reg_sprite_bank   = is_c ? vreg[9'h084] : 16'h0000;
+	assign reg_screen_flag   = is_c ? vreg[9'h184] : vreg[9'h180];
+	assign reg_t0_sx         = is_c ? vreg[9'h000] : vreg[9'h100];
+	assign reg_t0_sy         = is_c ? vreg[9'h001] : vreg[9'h101];
+	assign reg_t0_ctrl       = is_c ? vreg[9'h002] : vreg[9'h102];
+	assign reg_t1_sx         = is_c ? vreg[9'h004] : vreg[9'h104];
+	assign reg_t1_sy         = is_c ? vreg[9'h005] : vreg[9'h105];
+	assign reg_t1_ctrl       = is_c ? vreg[9'h006] : vreg[9'h106];
+	assign reg_t2_sx         = is_c ? vreg[9'h080] : vreg[9'h004];
+	assign reg_t2_sy         = is_c ? vreg[9'h081] : vreg[9'h005];
+	assign reg_t2_ctrl       = is_c ? vreg[9'h082] : vreg[9'h006];
+
 	wire [7:0] prot_rd;
 	always @* begin
 		if      (sel_rom)  rdat = rom_data;
@@ -217,6 +302,8 @@ module ms1_main (
 	wire mcu_cen_tick = (mdiv == mdiv_max);
 
 	wire mcu_irq2;
+	wire [3:0] mcu_dbg_bank;
+	wire mcu_dbg_rd;
 	// INT1 is display enable: high over the visible rows (MS1-19)
 	wire int1 = (vcount >= 9'd16) && (vcount < 9'd240);
 
@@ -231,20 +318,49 @@ module ms1_main (
 		.int1(int1),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
 		.in_dsw2(in_dsw2), .in_system(in_system),
-		.rom_we(mcu_rom_we), .rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data)
+		.rom_we(mcu_rom_we), .rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data),
+		.dbg_addr(), .dbg_bank(mcu_dbg_bank), .dbg_rd(mcu_dbg_rd), .dbg_wr(), .dbg_din()
 	);
+
+	always @(posedge clk) begin
+		if (reset) begin dbg_mcuacc <= 0; dbg_mcubank <= 0; end
+		else if (mcu_cen_tick) begin
+			if (mcu_dbg_rd) dbg_mcuacc <= dbg_mcuacc + 1;
+			if (mcu_dbg_rd && mcu_dbg_bank != 4'd0) dbg_mcubank <= dbg_mcubank + 1;
+		end
+	end
 
 	// --------------------------------------------------- interrupt timer
 	// HOLD_LINE: the level stays asserted until the CPU acknowledges it.
 	reg irq1_h, irq2_h, irq4_h;
 	wire iack = ~ASn & (FC0 & FC1 & FC2);
+	// ONE clear per acknowledge CYCLE, not per clock. iack is a level that
+	// stays asserted for the whole ack bus cycle; clearing on the level
+	// walks down the priority chain and retires every pending interrupt at
+	// once. The symptom is that only the highest-priority source is ever
+	// seen: IRQ 4 fired every frame while IRQ 1 and the protection's IRQ 2
+	// were raised and silently discarded, and the game sat in its STOP loop
+	// waiting for a handler that never ran.
+	reg int1_dd;
+	always @(posedge clk) begin
+		if (reset) begin dbg_irq2 <= 0; dbg_int1e <= 0; int1_dd <= 0; end
+		else begin
+			if (mcu_irq2) dbg_irq2 <= dbg_irq2 + 1;
+			int1_dd <= int1;
+			if (int1 & ~int1_dd) dbg_int1e <= dbg_int1e + 1;
+		end
+	end
+
+	reg iack_d;
+	always @(posedge clk) iack_d <= iack;
+	wire iack_edge = iack & ~iack_d;
 	always @(posedge clk) begin
 		if (reset) begin irq1_h <= 1'b0; irq2_h <= 1'b0; irq4_h <= 1'b0; end
 		else begin
 			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
 			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
 			if (mcu_irq2)                  irq2_h <= 1'b1;
-			if (iack) begin
+			if (iack_edge) begin
 				if      (irq4_h) irq4_h <= 1'b0;
 				else if (irq2_h) irq2_h <= 1'b0;
 				else if (irq1_h) irq1_h <= 1'b0;
@@ -256,6 +372,12 @@ module ms1_main (
 	// -------------------------------------------------------- bus tracing
 	reg as_d;
 	always @(posedge clk) begin
+		if (reset) begin dbg_acc <= 0; dbg_vregw <= 0; dbg_vramw <= 0; end
+		else if (as_active & ~as_d) begin
+			dbg_acc <= dbg_acc + 1;
+			if (~eRWn & sel_vreg) dbg_vregw <= dbg_vregw + 1;
+			if (~eRWn & (sel_v0|sel_v1|sel_v2)) dbg_vramw <= dbg_vramw + 1;
+		end
 		as_d <= as_active;
 		tr_valid <= 1'b0;
 		// The interrupt-acknowledge cycle (FC = 111) is a real bus cycle on

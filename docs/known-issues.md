@@ -30,6 +30,8 @@ closed by a measurement, never by reasoning.
 | MS1-20 | A debug probe showed the read bus on writes | closed |
 | MS1-21 | The global address mask is part of the decode | closed |
 | MS1-22 | Bus traces can only agree until an interrupt lands apart | **OPEN** — a limit of the method, bounded and understood |
+| MS1-23 | One interrupt-acknowledge CYCLE must retire one interrupt | closed |
+| MS1-24 | The protection MCU needs ~48 frames of boot before it answers | closed |
 
 ---
 
@@ -552,3 +554,53 @@ timing model rather than a better board model, which is the wrong thing to
 chase. The frame-level gates (M2 gate 2) are the right instrument beyond this
 point, because they compare what the board produces rather than when it
 produces it.
+
+## MS1-23 — One interrupt-acknowledge CYCLE must retire one interrupt (closed)
+
+The interrupt timer holds each level until the CPU acknowledges it, which is
+what MAME's `HOLD_LINE` means. The acknowledge was detected as a LEVEL:
+
+```systemverilog
+wire iack = ~ASn & (FC0 & FC1 & FC2);
+...
+if (iack) begin
+    if      (irq4_h) irq4_h <= 1'b0;
+    else if (irq2_h) irq2_h <= 1'b0;
+    else if (irq1_h) irq1_h <= 1'b0;
+end
+```
+
+`iack` stays asserted for the whole acknowledge bus cycle, so that chain walks
+down the priority ladder on successive clocks and retires **every** pending
+interrupt in one acknowledge. Only the highest-priority source is ever
+serviced; the rest are raised and silently discarded.
+
+The symptom was not "interrupts are broken". It was that avspirit took IRQ 4
+every frame, as expected, while IRQ 1 and the protection's IRQ 2 were counted
+as raised and never seen by the CPU — and the game sat in its `STOP` loop at
+0x1006 polling a work-RAM byte that only the IRQ 2 handler ever writes.
+
+Fixed by acknowledging on the rising edge of `iack`.
+
+## MS1-24 — The protection MCU needs ~48 frames of boot before it answers (closed)
+
+Hours could go into "the MCU is not responding" here, so it is worth writing
+down: it is supposed not to respond, for quite a long time.
+
+avspirit's main CPU writes its first protection command at bus access 158,029
+and then `STOP`s. MAME's MCU does not read its input-latch space for the first
+time until **MCU access 1,420,713** — it spends everything before that on its
+own initialisation. In this core that is about 48 frames of simulated board
+time before the first IRQ 2 reaches the 68000, and roughly 100 before the game
+turns its layers on.
+
+Two consequences:
+
+* A frame-level comparison that runs 40 or 60 frames sees a black screen and
+  concludes the video is broken. It is not; the game has not drawn yet.
+* Any "is the MCU alive?" check has to be a counter over a long run, not an
+  inspection of the first few thousand cycles.
+
+The numbers to expect on avspirit, measured: about 30,000 main-CPU accesses per
+frame once running, 1 INT1 edge per frame, and IRQ 2 roughly ten times per
+frame once the protection conversation is in flow.

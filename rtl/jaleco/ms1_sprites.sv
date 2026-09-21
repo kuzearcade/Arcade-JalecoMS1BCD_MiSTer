@@ -55,6 +55,12 @@ module ms1_sprites (
 	output reg  [21:0]  rom_addr,       // sprite ROM, 128 bytes per 16x16 tile
 	input        [7:0]  rom_data,
 
+	// Display readback. rd_ce must be the PIXEL enable, not the system
+	// clock: the consumer's pipeline advances one stage per pixel, and a
+	// readback that updates every clk instead runs ahead of it by however
+	// many clocks there are per pixel. That is invisible when ce is tied
+	// high (as in sim/rtl/video_state) and wrong as soon as it is not.
+	input               rd_ce,
 	input       [15:0]  fb_rd_addr,     // {y[7:0], x[7:0]}
 	output reg   [8:0]  fb_rd_data      // {pri, colour[3:0], pen[3:0]}
 );
@@ -68,7 +74,7 @@ module ms1_sprites (
 
 	always @(posedge clk) begin
 		if (fb_we) plane[fb_wr_addr] <= fb_wr_data;
-		fb_rd_data <= plane[fb_rd_addr];     // port B read
+		if (rd_ce) fb_rd_data <= plane[fb_rd_addr];   // port B read
 	end
 
 	// ------------------------------------------------------------- sequencer

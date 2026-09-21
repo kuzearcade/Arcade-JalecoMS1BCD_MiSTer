@@ -115,7 +115,7 @@ module ms1_video #(
 		.obj_addr(obj_addr), .obj_data(obj_data),
 		.spr_addr(spr_ram_addr), .spr_data(spr_ram_data),
 		.rom_addr(spr_rom_addr), .rom_data(spr_rom_data),
-		.fb_rd_addr({by[7:0], bx[7:0]}), .fb_rd_data(fb_q));
+		.rd_ce(ce), .fb_rd_addr({by[7:0], bx[7:0]}), .fb_rd_data(fb_q));
 
 	reg [8:0] fb_d1, fb_d2;
 	always @(posedge clk) if (ce) begin fb_d1 <= fb_q; fb_d2 <= fb_d1; end
