@@ -22,6 +22,10 @@ closed by a measurement, never by reasoning.
 | MS1-12 | A per-frame snapshot cannot reproduce every frame | **OPEN** — bounded and understood; not an RTL defect |
 | MS1-13 | Screen flip is rot180 of the finished frame | closed |
 | MS1-14 | MAME hangs in SDL device init with no video or sound | closed |
+| MS1-15 | Sprite "low priority" is the attribute bit SET, not clear | closed |
+| MS1-16 | MAME's sprite order contradicts its own comment | **OPEN** — unobservable in any captured scene |
+| MS1-17 | The sprite trails effect is not modelled | **OPEN** — no captured scene uses it |
+| MS1-18 | A green gate can mean the feature was never exercised | closed |
 
 ---
 
@@ -383,3 +387,68 @@ way — a job that looks like it is working and is not:
   Redirect to a file and read the file.
 * `pkill -f mame` matches the shell's own command line and kills the session.
   Kill by PID from `pgrep -x mame` instead.
+
+## MS1-15 — Sprite "low priority" is the attribute bit SET, not clear (closed)
+
+The priority PROM's address bit 0 is "low priority sprite AND sprite
+splitting". Which sprites are the *low* group was not obvious: the sprite
+attribute's bit 3 is documented only as "priority", and MAME's
+`mix_sprite_bitmap` turns it into a mask of `0x0c` when set and `0x0a` when
+clear, which does not name either group.
+
+Measured on bigstrik's split scenes, where half the screen is sprite pixels:
+the low group is the one whose attribute bit 3 is **SET**. The other polarity
+costs 25205 of 57344 pixels there, and **exactly zero** on every scene that
+has no sprites or no splitting -- which is every other scene captured.
+
+## MS1-16 — MAME's sprite order contradicts its own comment (OPEN)
+
+`megasys1_v.cpp` says "sprite order is from first in Sprite Data RAM
+(frontmost) to last", and that line is what `docs/PLAN.md` 4.D item 8 carries
+in as "sprite order here is first-entry-frontmost, the opposite of PANDORA".
+
+The code does the opposite. `draw_sprites` walks Object RAM **descending**
+(`offs` from 0x3fc down to 0) and `draw_single_sprite` is **first-writer-wins**
+(it tests bit 15 and skips a pixel that is already set). Drawing the last
+entry first and refusing to overwrite makes the **last** entry frontmost.
+
+The RTL mirrors the code, because the code is what produced the oracle frames.
+**Open** because no captured scene distinguishes the two: reversing the walk in
+the Python model changes nothing on any frame checked, so nothing here has
+overlapping sprites from different entries. A scene that does would settle it.
+
+## MS1-17 — The sprite trails effect is not modelled (OPEN)
+
+`sprite_flag` bit 4 means "do not clear the sprite framebuffer", and MAME
+then does a *partial* clear by pen value (`partial_clear_sprite_bitmap`),
+commenting that the P47 trails effect is "not quite right tho" and that it
+does not know what the low four bits select.
+
+`ms1_sprites.sv` honours the bit to the extent of skipping the clear, but does
+not implement the partial clear. **Open** because no captured frame of any of
+the sixteen sets sets bit 4, so there is nothing to verify against; the upstream
+behaviour is admittedly uncertain anyway.
+
+## MS1-18 — A green gate can mean the feature was never exercised (closed)
+
+The first complete run of the M1 gate through the RTL passed 26 of 26. Two of
+those rows claimed to test sprite splitting and "sprites both over and under
+the layers". The scenes chosen for them contain **zero sprite pixels** -- and
+so do all three scenes chosen for mode C. They passed because the sprite engine
+contributed nothing to them.
+
+Choosing scenes that actually contain sprites dropped the same gate to 23 of 28
+and exposed two real bugs immediately (the sprite field off-by-one and the
+priority polarity of MS1-15), one of which is wrong on 44% of the pixels of
+every split scene.
+
+The lesson is not "check sprite counts". It is that **a gate is only as strong
+as the coverage of the scenes it runs on**, and coverage has to be measured
+rather than inferred from the scene's name. `tools/run_video_state_gate.sh` is
+now accompanied by a coverage audit -- sprite pixels, active layers, split and
+flip per row -- printed in `docs/m1-gate.md` beside the results, so a row that
+stops exercising its feature is visible rather than quietly green.
+
+This is the same failure shape as MS1-3 (a generator that produced .mra files
+with no PROM) and MS1-9 (frames six bytes too long): output that looks correct
+because nothing counted what it contained.
