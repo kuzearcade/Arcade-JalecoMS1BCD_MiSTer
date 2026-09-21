@@ -4,7 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Two are open**, both recorded during M0 and both answerable off-board.
+**Three are open**: two recorded during M0 and answerable off-board, and
+MS1-31, which needs the board.
 
 | | | |
 |---|---|---|
@@ -38,6 +39,7 @@ closed by a measurement, never by reasoning.
 | MS1-28 | A fractional clock divider whose accumulator is one bit too narrow | closed |
 | MS1-29 | jt51 samples `write` on `cen`, so a one-clock strobe never raises `busy` | closed |
 | MS1-30 | `screen_flag` bit 4 is a reset line over the whole sound subsystem | closed |
+| MS1-31 | Matching MAME's OKI status means matching a hack MAME admits to | **OPEN** — only real hardware can settle it |
 
 ---
 
@@ -807,3 +809,38 @@ The lesson is about where to look: three separate measurements confirmed the
 sound subsystem was internally correct, and the remaining difference was an
 input nobody had thought to model, sitting behind a register named after the
 screen.
+
+
+## MS1-31 — Matching MAME's OKI status means matching a hack MAME admits to (open)
+
+`megasys1_state::machine_reset()` sets `m_ignore_oki_status = 1` for every set
+in the driver except hachoo, so `oki_status_r()` returns 0 rather than the
+chip's real status. The driver says plainly why (megasys1.cpp:679):
+
+> Note that some games' music is severely slowed down and out of sync
+> (avspirit, 64street) by the fact that the game waits for some samples to be
+> played entirely (M6295 status register polled) but they take too much time
+> ... A temporary fix is to make the status of this chip return 0.
+
+So this is not a property of the hardware. It is MAME compensating for its own
+OKI timing, and it changes observable behaviour: the sound CPU polls that
+register and waits on it, so with a real status it takes a different path and
+writes at a different rate.
+
+That puts M2 gates (3) and (4) in an awkward position. They are defined against
+MAME, and to match MAME the core must return 0 — which is what
+`ms1_sound.sv` does when `oki_status_real` is low, and what the sim harnesses
+set. But a core that ships that way is reproducing a documented emulator
+workaround rather than the board.
+
+The port is therefore already there and already plumbed out to the core
+boundary, defaulting to MAME's behaviour so the gates measure what they
+claim to measure. **What is not yet decided is what the MiSTer top level
+should pass**, and that cannot be decided here: it needs the real thing, with
+both settings, on the two games the comment names. Until then the gate numbers
+below should be read as "matches MAME", not "matches hardware", and the
+difference is confined to this one bit.
+
+The related question — whether jt6295's sample timing is close enough that a
+real status would work where MAME's does not — is answerable the same way and
+at the same time.

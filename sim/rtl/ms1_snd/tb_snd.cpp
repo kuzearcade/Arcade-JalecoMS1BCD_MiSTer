@@ -139,8 +139,16 @@ int main(int argc, char **argv) {
 			if (++acc >= AUDIO_DIV) {
 				acc = 0;
 				if (wmix) {
-					int16_t s = (int16_t)top->snd_l;              fwrite(&s, 2, 1, wmix);
-					int16_t a = (int16_t)top->dbg_fm_l;           fwrite(&a, 2, 1, wfm);
+					// MAME renders two speakers and audio_compare averages them,
+					// so the core's stereo sources must be averaged the same way
+					// -- dumping the left channel alone would drop whatever the
+					// YM2151 has panned right and read as a correlation failure.
+					int16_t s = (int16_t)(((int32_t)(int16_t)top->snd_l +
+					                       (int32_t)(int16_t)top->snd_r) / 2);
+					fwrite(&s, 2, 1, wmix);
+					int16_t a = (int16_t)(((int32_t)(int16_t)top->dbg_fm_l +
+					                       (int32_t)(int16_t)top->dbg_fm_r) / 2);
+					fwrite(&a, 2, 1, wfm);
 					// the OKI taps are 14-bit; shift to the same scale as the FM
 					int16_t b1 = (int16_t)(((int16_t)top->dbg_oki1) << 2); fwrite(&b1, 2, 1, wo1);
 					int16_t b2 = (int16_t)(((int16_t)top->dbg_oki2) << 2); fwrite(&b2, 2, 1, wo2);
