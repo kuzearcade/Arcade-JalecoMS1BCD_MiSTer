@@ -28,6 +28,8 @@ closed by a measurement, never by reasoning.
 | MS1-18 | A green gate can mean the feature was never exercised | closed |
 | MS1-19 | The protection MCU is paced by the video frame, not a timer | closed |
 | MS1-20 | A debug probe showed the read bus on writes | closed |
+| MS1-21 | The global address mask is part of the decode | closed |
+| MS1-22 | Bus traces can only agree until an interrupt lands apart | **OPEN** — a limit of the method, bounded and understood |
 
 ---
 
@@ -505,3 +507,48 @@ The lesson is the one MS1-3, MS1-9 and MS1-18 all taught in other forms:
 instrumentation**, because it sends you looking in the right place for the
 wrong reason. When a trace accuses something that is already well tested,
 suspect the trace.
+
+## MS1-21 — The global address mask is part of the decode (closed)
+
+Every Mega System 1 memory map opens with `map.global_mask(...)`: `0xfffff` on
+System B, `0x1fffff` on System C. That is not decoration. The board ignores the
+high address lines, and it matters from the very first instruction:
+
+64street's reset stack pointer is **0**, so the 68000's first push goes to
+`0xFFFFFC`. Unmasked that is nothing at all; masked to 21 bits it is `0x1FFFFC`,
+which is work RAM. Decoding the raw 24-bit address silently dropped every early
+write, and the read-back a few accesses later returned 0 where MAME returned 6.
+
+The reason this took a while is the second half: the harness applied the mask
+on the way *into the trace*, so the trace showed `w 1FFFFC` — exactly what MAME
+showed — while the RAM behind it was never written. The instrumentation and the
+thing it instrumented disagreed, and the instrumentation was the one that
+looked right. Same shape as MS1-20.
+
+## MS1-22 — Bus traces can only agree until an interrupt lands apart (OPEN)
+
+`rtl/ms1bcd/ms1_main.sv` reproduces MAME's main-CPU bus trace exactly for
+188,306 accesses on avspirit and 30,363 on 64street — through reset, ROM and
+RAM initialisation, the protection conversation and past the first
+layer-enable write (`docs/m2-gate1.md` has the milestone table).
+
+Both stop the same way: the RTL takes the MCU-driven IRQ 2 a few dozen
+accesses before MAME. MAME takes the *same* interrupt shortly after. After
+that the two are inside an interrupt handler at different points and the
+traces cannot realign — `tools/bus_compare.py` finds zero realignments, which
+is what a control-flow divergence looks like and is not what a decode bug
+looks like.
+
+IRQ 2 is raised once per protection transaction (MAME fetches the level-2
+autovector exactly 3,695 times for avspirit, matching its 3,695 protection
+reads), so its arrival is set by how long the MCU takes to answer. Correcting
+the MCU clock from 16 MHz to the proper 8/12 MHz moved the divergence later
+but did not remove it: what remains is a cycle-exact RTL sim against MAME's
+120 kHz scheduling quantum.
+
+**Open** because it bounds what this comparison can prove, not because
+anything is known to be wrong. A longer agreement would need MAME's own
+timing model rather than a better board model, which is the wrong thing to
+chase. The frame-level gates (M2 gate 2) are the right instrument beyond this
+point, because they compare what the board produces rather than when it
+produces it.

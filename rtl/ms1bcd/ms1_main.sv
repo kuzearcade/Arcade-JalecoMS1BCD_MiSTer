@@ -1,0 +1,288 @@
+// Jaleco Mega System 1 main-CPU subsystem: the 68000, the board decode, the
+// scanline interrupt timer and the protection MCU.
+//
+// Built to be compared against MAME's own main-CPU bus trace
+// (sim/oracle/ms1_bustrace.lua), which is docs/PLAN.md M2 gate (1).
+//
+// Decode, System B (megasys1B_map, global_mask 0xFFFFF):
+//   000000-03FFFF  ROM
+//   044000         active_layers (w)
+//   044008-04400D  layer 2 scroll
+//   044100         sprite_flag
+//   044200-044205  layer 0 scroll
+//   044208-04420D  layer 1 scroll
+//   044300         screen_flag (w)
+//   044308         sound latch (w)
+//   048000-0487FF  palette
+//   04E000-04FFFF  object RAM
+//   050000-053FFF  scroll 0 VRAM
+//   054000-057FFF  scroll 1 VRAM
+//   058000-05BFFF  scroll 2 VRAM
+//   060000-06FFFF  work RAM, MIRRORED at 070000 -- and the mirror is what
+//                  the games actually use: 340k of avspirit's first 1.5M
+//                  accesses are at 07xxxx and none at 06xxxx.
+//   080000-0BFFFF  ROM (maincpu + 0x40000)
+//   0E0000         protection port
+//
+// System C moves everything (0C2000 video regs, 0F8000 palette, 0D2000
+// object RAM, 0E0000/0E8000/0F0000 VRAM with +0x4000 mirrors, 1C0000 work RAM
+// mirrored +0x30000, 0D8000 protection) and masks to 21 bits.
+//
+// WORK RAM BYTE WRITES MIRROR INTO BOTH HALVES. MAME's ram_w says so in
+// capitals -- "DON'T use COMBINE_DATA ... 64th Street and Chimera Beast rely
+// on this for attract inputs" -- so a byte write puts the same byte in both
+// lanes rather than leaving the other alone. This is a real hardware quirk
+// and not an emulator shortcut.
+//
+// Interrupts, System B and C with the MCU: scanline 96 raises level 1,
+// scanline 240 raises level 4, and the MCU raises level 2 when it reads
+// bank 7 of its own space. All are HOLD_LINE in MAME, i.e. asserted until
+// the CPU acknowledges.
+
+module ms1_main (
+	input               clk,
+	input               reset,
+	input        [1:0]  mode,          // 0 = B, 1 = C
+
+	// program ROM, served by the caller (512 KB, word addressed)
+	output      [18:0]  rom_addr,
+	input       [15:0]  rom_data,
+
+	// MCU internal ROM load
+	input               mcu_rom_we,
+	input       [13:0]  mcu_rom_addr,
+	input        [7:0]  mcu_rom_data,
+
+	// board inputs
+	input        [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
+
+	// video timing in, so the interrupt timer and the MCU's INT1 are real
+	input        [8:0]  vcount,
+	input               vtick,         // one pulse per scanline
+
+	// bus trace
+	output reg  [23:0]  tr_addr,
+	output reg  [15:0]  tr_data,
+	output reg          tr_we,
+	output reg          tr_valid,
+
+	// probes
+	output reg  [23:0]  dbg_ramw_addr,
+	output reg  [15:0]  dbg_ramw_data,
+	output reg          dbg_ramw
+);
+	// ------------------------------------------------------- 68000 clocking
+	// enPhi1/enPhi2 must strictly alternate; fx68k wedges mid-cycle otherwise.
+	reg [2:0] phdiv;
+	wire [2:0] phdiv_max = (mode == 2'd1) ? 3'd1 : 3'd2;   // 12 MHz : 8 MHz
+	reg enPhi1, enPhi2, phase;
+	always @(posedge clk) begin
+		if (reset) begin phdiv <= 3'd0; phase <= 1'b0; enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
+		else begin
+			enPhi1 <= 1'b0; enPhi2 <= 1'b0;
+			if (phdiv == phdiv_max) begin
+				phdiv <= 3'd0;
+				phase <= ~phase;
+				if (phase) enPhi2 <= 1'b1; else enPhi1 <= 1'b1;
+			end else phdiv <= phdiv + 3'd1;
+		end
+	end
+
+	wire        eRWn, ASn, LDSn, UDSn, VMAn, FC0, FC1, FC2, BGn, oRESETn, oHALTEDn;
+	wire [15:0] oEdb;
+	wire [23:1] eab;
+	reg  [15:0] iEdb;
+
+	wire [23:0] byte_addr = {eab, 1'b0};
+	wire        as_active = ~ASn & (~LDSn | ~UDSn);
+
+	// ------------------------------------------------------------- decode
+	wire is_c = (mode == 2'd1);
+
+	// THE GLOBAL ADDRESS MASK IS PART OF THE DECODE. MAME's maps open with
+	// map.global_mask(0xfffff) on System B and 0x1fffff on System C, and the
+	// board really does ignore the high address lines. It matters from the
+	// very first instruction: 64street's reset stack pointer is 0, so its
+	// first push is to 0xFFFFFC, which is nothing at all unmasked and is
+	// work RAM at 0x1FFFFC once masked. Decoding the raw 24-bit address
+	// silently dropped every one of those writes -- and because the harness
+	// masked the address only on its way into the TRACE, the trace looked
+	// correct while the memory behind it was not being written.
+	wire [23:0] amask = is_c ? 24'h1FFFFF : 24'h0FFFFF;
+	wire [23:0] a = byte_addr & amask;
+
+	// System B
+	wire b_rom0 = ~is_c & (a < 24'h040000);
+	wire b_rom1 = ~is_c & (a >= 24'h080000) & (a < 24'h0C0000);
+	wire b_vreg = ~is_c & (a >= 24'h044000) & (a < 24'h044400);
+	wire b_pal  = ~is_c & (a >= 24'h048000) & (a < 24'h048800);
+	wire b_obj  = ~is_c & (a >= 24'h04E000) & (a < 24'h050000);
+	wire b_v0   = ~is_c & (a >= 24'h050000) & (a < 24'h054000);
+	wire b_v1   = ~is_c & (a >= 24'h054000) & (a < 24'h058000);
+	wire b_v2   = ~is_c & (a >= 24'h058000) & (a < 24'h05C000);
+	wire b_ram  = ~is_c & (a >= 24'h060000) & (a < 24'h080000);   // + mirror
+	wire b_prot = ~is_c & (a >= 24'h0E0000) & (a < 24'h0E0002);
+
+	// System C
+	wire c_rom0 = is_c & (a < 24'h080000);
+	wire c_vreg = is_c & (a >= 24'h0C2000) & (a < 24'h0C2400);
+	wire c_pal  = is_c & (a >= 24'h0F8000) & (a < 24'h0F8800);
+	wire c_obj  = is_c & (a >= 24'h0D2000) & (a < 24'h0D4000);
+	wire c_v0   = is_c & (a >= 24'h0E0000) & (a < 24'h0E8000);
+	wire c_v1   = is_c & (a >= 24'h0E8000) & (a < 24'h0F0000);
+	wire c_v2   = is_c & (a >= 24'h0F0000) & (a < 24'h0F8000);
+	wire c_ram  = is_c & (a >= 24'h1C0000) & (a < 24'h200000);
+	wire c_prot = is_c & (a >= 24'h0D8000) & (a < 24'h0D8002);
+
+	wire sel_rom  = b_rom0 | b_rom1 | c_rom0;
+	wire sel_vreg = b_vreg | c_vreg;
+	wire sel_pal  = b_pal  | c_pal;
+	wire sel_obj  = b_obj  | c_obj;
+	wire sel_v0   = b_v0   | c_v0;
+	wire sel_v1   = b_v1   | c_v1;
+	wire sel_v2   = b_v2   | c_v2;
+	wire sel_ram  = b_ram  | c_ram;
+	wire sel_prot = b_prot | c_prot;
+
+	// ROM word index: B's second bank continues the same region at +0x40000
+	assign rom_addr = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
+
+	// ------------------------------------------------------------ memories
+	reg [15:0] wram [0:32767];
+	reg [15:0] pal  [0:1023];
+	reg [15:0] obj  [0:4095];
+	reg [15:0] vr0  [0:8191];
+	reg [15:0] vr1  [0:8191];
+	reg [15:0] vr2  [0:8191];
+	reg [15:0] vreg [0:511];
+
+	wire [14:0] wram_i = is_c ? a[15:1] : a[15:1];
+	wire  [9:0] pal_i  = a[10:1];
+	wire [11:0] obj_i  = a[12:1];
+	wire [12:0] v_i    = a[13:1];
+	wire  [8:0] vreg_i = a[9:1];
+
+	wire we = as_active & ~eRWn;
+	wire [15:0] wdat = oEdb;
+	// the work-RAM byte-write quirk (see header)
+	wire [15:0] ram_wdat = (~LDSn & ~UDSn) ? wdat
+	                     : (~UDSn) ? {wdat[15:8], wdat[15:8]}
+	                               : {wdat[7:0],  wdat[7:0]};
+
+	reg [15:0] rdat;
+	always @(posedge clk) begin
+		dbg_ramw <= we & sel_ram;
+		dbg_ramw_data <= ram_wdat;
+		dbg_ramw_addr <= a;
+		dbg_ramw_data <= ram_wdat;
+		if (we) begin
+			if (sel_ram)  wram[wram_i] <= ram_wdat;
+			if (sel_pal)  pal[pal_i]   <= wdat;
+			if (sel_obj)  obj[obj_i]   <= wdat;
+			if (sel_v0)   vr0[v_i]     <= wdat;
+			if (sel_v1)   vr1[v_i]     <= wdat;
+			if (sel_v2)   vr2[v_i]     <= wdat;
+			if (sel_vreg) vreg[vreg_i] <= wdat;
+		end
+	end
+
+	wire [7:0] prot_rd;
+	always @* begin
+		if      (sel_rom)  rdat = rom_data;
+		else if (sel_ram)  rdat = wram[wram_i];
+		else if (sel_pal)  rdat = pal[pal_i];
+		else if (sel_obj)  rdat = obj[obj_i];
+		else if (sel_v0)   rdat = vr0[v_i];
+		else if (sel_v1)   rdat = vr1[v_i];
+		else if (sel_v2)   rdat = vr2[v_i];
+		else if (sel_vreg) rdat = vreg[vreg_i];
+		else if (sel_prot) rdat = {8'h00, prot_rd};
+		else               rdat = 16'h0000;
+	end
+	always @* iEdb = rdat;
+
+	// --------------------------------------------------------- protection
+	// The MCU runs at the MAIN CPU's clock: 8 MHz on System B, 12 MHz on
+	// System C. From 48 MHz that is a divide by 6 and by 4 -- NOT the same
+	// count as the 68000's phi divider, which is half a CPU cycle. Getting
+	// this wrong by 2x does not break anything visibly: the MCU simply
+	// answers the protection handshake twice as fast, and the IRQ 2 it
+	// raises lands tens of accesses early.
+	wire [2:0] mdiv_max = is_c ? 3'd3 : 3'd5;
+	reg  [2:0] mdiv;
+	always @(posedge clk) begin
+		if (reset) mdiv <= 3'd0;
+		else mdiv <= (mdiv == mdiv_max) ? 3'd0 : mdiv + 3'd1;
+	end
+	wire mcu_cen_tick = (mdiv == mdiv_max);
+
+	wire mcu_irq2;
+	// INT1 is display enable: high over the visible rows (MS1-19)
+	wire int1 = (vcount >= 9'd16) && (vcount < 9'd240);
+
+	reg prot_we_pulse;
+	always @(posedge clk) prot_we_pulse <= we & sel_prot;
+	wire prot_we_edge = (we & sel_prot) & ~prot_we_pulse;
+
+	ms1_iomcu u_mcu (
+		.clk(clk), .cen(mcu_cen_tick), .reset(reset),
+		.host_we(prot_we_edge), .host_data(oEdb[7:0]),
+		.mcu_data(prot_rd), .main_irq2(mcu_irq2),
+		.int1(int1),
+		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
+		.in_dsw2(in_dsw2), .in_system(in_system),
+		.rom_we(mcu_rom_we), .rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data)
+	);
+
+	// --------------------------------------------------- interrupt timer
+	// HOLD_LINE: the level stays asserted until the CPU acknowledges it.
+	reg irq1_h, irq2_h, irq4_h;
+	wire iack = ~ASn & (FC0 & FC1 & FC2);
+	always @(posedge clk) begin
+		if (reset) begin irq1_h <= 1'b0; irq2_h <= 1'b0; irq4_h <= 1'b0; end
+		else begin
+			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
+			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
+			if (mcu_irq2)                  irq2_h <= 1'b1;
+			if (iack) begin
+				if      (irq4_h) irq4_h <= 1'b0;
+				else if (irq2_h) irq2_h <= 1'b0;
+				else if (irq1_h) irq1_h <= 1'b0;
+			end
+		end
+	end
+	wire [2:0] ipl = irq4_h ? 3'd4 : irq2_h ? 3'd2 : irq1_h ? 3'd1 : 3'd0;
+
+	// -------------------------------------------------------- bus tracing
+	reg as_d;
+	always @(posedge clk) begin
+		as_d <= as_active;
+		tr_valid <= 1'b0;
+		// The interrupt-acknowledge cycle (FC = 111) is a real bus cycle on
+		// hardware -- the 68000 drives 0xFFFFFx with the level in A3:A1 -- but
+		// MAME services autovectors internally and its memory tap never sees
+		// it. Excluding it here keeps the two traces comparable; it is a
+		// difference in what is OBSERVABLE, not in what happens.
+		if (as_active & ~as_d & ~iack) begin   // one event per bus cycle
+			tr_addr  <= a;
+			tr_data  <= eRWn ? rdat : oEdb;
+			tr_we    <= ~eRWn;
+			tr_valid <= 1'b1;
+		end
+	end
+
+	fx68k u_cpu (
+		.clk(clk), .HALTn(1'b1), .extReset(reset), .pwrUp(reset),
+		.enPhi1(enPhi1), .enPhi2(enPhi2),
+		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
+		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),
+		.oRESETn(oRESETn), .oHALTEDn(oHALTEDn),
+		// DTACK must NOT be asserted during an interrupt acknowledge: the
+		// 68000 prefers it over VPA, which turns an AUTOVECTORED interrupt
+		// into a vectored one and fetches vector 0 off an undriven bus.
+		// MAME's set_input_line/HOLD_LINE is autovectored.
+		.DTACKn(~(as_active & ~iack)), .VPAn(~iack), .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
+		.IPL0n(~ipl[0]), .IPL1n(~ipl[1]), .IPL2n(~ipl[2]),
+		.iEdb(iEdb), .oEdb(oEdb), .eab(eab)
+	);
+endmodule
