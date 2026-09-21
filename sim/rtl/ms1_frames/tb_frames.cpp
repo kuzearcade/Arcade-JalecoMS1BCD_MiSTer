@@ -75,6 +75,13 @@ int main(int argc, char **argv) {
 	for (int i = 0; i < 64; i++) tick();
 	top->reset = 0;
 
+	// MS1_PROTLOG records the 68000's side of the protection conversation in
+	// the same shape as sim/oracle/ms1_bustrace.lua's prot.log, so the two can
+	// be diffed command by command -- M2 gate (5), which explicitly is not
+	// satisfied by "the game boots".
+	FILE *plog = getenv("MS1_PROTLOG") ? fopen(getenv("MS1_PROTLOG"), "w") : nullptr;
+	const unsigned PROT_ADDR = mode ? 0x0D8000 : 0x0E0000;
+
 	const int W = 256, H = 224;
 	std::vector<std::vector<uint32_t>> frames;
 	std::vector<uint32_t> cur(W * H, 0);
@@ -83,6 +90,8 @@ int main(int argc, char **argv) {
 
 	for (long c = 0; c < maxclk && (int)frames.size() < nframes; c++) {
 		tick();
+		if (plog && top->tr_valid && (top->tr_addr == PROT_ADDR))
+			fprintf(plog, "%c %04X\n", top->tr_we ? 'w' : 'r', top->tr_data & 0xFFFF);
 		if (getenv("MS1_TRACE") && top->tr_valid)
 			fprintf(stderr, "%c %06X %04X\n", top->tr_we ? 'w' : 'r', top->tr_addr, top->tr_data);
 		if (top->vblank_rise && getenv("MS1_REGS"))
@@ -108,6 +117,7 @@ int main(int argc, char **argv) {
 		if (top->ce_pix_o && top->rgb_valid && px < cur.size())
 			cur[px++] = top->rgb & 0xFFFFFF;
 	}
+	if (plog) fclose(plog);
 	printf("captured %zu frames\n", frames.size());
 
 	// MS1_STATEDIR dumps the sim's own video memories in exactly the layout
