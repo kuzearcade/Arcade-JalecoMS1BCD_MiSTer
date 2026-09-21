@@ -40,6 +40,7 @@ import gen_ms1bcd_mra as G
 TILES_PER_PAGE_X = TILES_PER_PAGE_Y = 0x20
 TILES_PER_PAGE   = TILES_PER_PAGE_X * TILES_PER_PAGE_Y
 VIS_W, VIS_H, VIS_Y0 = 256, 224, 16
+SCREEN_W, SCREEN_H = 256, 256   # set_size(32*8, 32*8) in every mode
 
 # ---------------------------------------------------------------- ROM access
 def region_bytes(setname, region):
@@ -273,6 +274,8 @@ class Renderer:
         mw, mh = ncols * 8, nrows * 8
         vram = st[f'layer{L}']
         gfx = self.layer_gfx[L]
+        # Screen flip is NOT handled here -- see render(), which applies it to
+        # the finished frame. Everything below renders unflipped.
         ys = (np.arange(VIS_H) + VIS_Y0 + sy) % mh
         xs = (np.arange(VIS_W) + sx) % mw
         row = (ys // 8)[:, None]                      # (H,1)
@@ -331,9 +334,11 @@ class Renderer:
                 mosaic = (attr & 0x0F00) >> 8
                 mossol = bool((attr >> 12) & 1)
                 code = (code & 0xFFF) + ((sbank & 1) << 12)
-                if scrf & 1:
-                    flipx, flipy = not flipx, not flipy
-                    sx, sy = 240 - sx, 240 - sy
+                # MAME's draw_sprites also mirrors each sprite when screen_flag
+                # bit 0 is set (flipx/flipy inverted, sx/sy -> 240-sx/240-sy).
+                # That is deliberately NOT done here: render() rotates the
+                # whole finished frame instead, which is equivalent and was
+                # verified as such -- see render().
                 self._blit(buf, code, color, sx, sy - 16, flipx, flipy, mosaic, mossol, pri)
         return buf[VIS_Y0:VIS_Y0 + VIS_H]
 
@@ -436,7 +441,26 @@ class Renderer:
             idx[m] = (sb[m] & 0x3FFF) + 256 * 3
 
         pal = pal_rgb(st['palette'], self.mode)
-        return pal[np.clip(idx, 0, len(pal) - 1)]
+        out = pal[np.clip(idx, 0, len(pal) - 1)]
+
+        # Screen flip (screen_flag bit 0) is exactly rot180 of the finished
+        # visible frame. MAME reaches that result the long way -- every
+        # tilemap gets TILEMAP_FLIPX|FLIPY, and draw_sprites separately
+        # mirrors each sprite's position and flip flags -- but the composite
+        # is a plain 180-degree rotation, because the visible window is
+        # symmetric about the bitmap centre (rows 16..239 of 256, columns
+        # 0..255, both centred on 127.5).
+        #
+        # This is NOT assumed. docs/PLAN.md 4.D item 10 warns that "RTL flip
+        # == rot180(RTL no-flip)" is tautological and must be checked against
+        # MAME. So it was checked MAME against MAME: avspirit was captured
+        # twice from the same point, once with the Flip Screen DIP forced,
+        # and the flipped frame equals rot180 of the unflipped frame with
+        # ZERO differing pixels. Both sides came from MAME, so the identity
+        # is a property of the hardware model, not of this code.
+        if regs.get('screen_flag', 0) & 1:
+            out = out[::-1, ::-1]
+        return out
 
 def write_ppm(path, rgb):
     with open(path, 'wb') as f:

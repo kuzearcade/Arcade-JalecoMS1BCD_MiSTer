@@ -49,6 +49,11 @@ local do_st  = os.getenv('MS1_STATE') == '1'
 -- thousands of files. F still counts from 0 at the first DUMPED frame, so
 -- the F-1 register rule and the F-2 sprite rule stay valid within a run.
 local skip   = tonumber(os.getenv('MS1_SKIP') or '0')
+-- MS1_SCAN: write nothing but one line of register state per frame, into a
+-- single scan.txt. Used to answer "which game, and which frame, ever sets
+-- the sprite-split bit / the flip bit / a non-default page layout?" across
+-- all sixteen sets without writing 67 KB of VRAM per frame to find out.
+local scan   = os.getenv('MS1_SCAN') == '1'
 local warm   = 0
 
 local MODE = {
@@ -183,9 +188,51 @@ local function dump_pixels()
   f:close()
 end
 
+-- MS1_DIP: force a DIP switch, as "Field Name=value" (repeatable, comma
+-- separated). The M1 gate needs a FLIPPED frame, and no attract mode
+-- produces one -- flip is a DIP on every set that has it. Forcing it here is
+-- better than hunting for a scene that happens to set screen_flag bit 0,
+-- because it also proves the flip path end to end rather than by luck.
+--   MS1_DIP="Flip Screen=0"
+local dipspec = os.getenv('MS1_DIP')
+if dipspec then
+  for pair in dipspec:gmatch('[^,]+') do
+    local k, v = pair:match('^%s*(.-)%s*=%s*(%-?%w+)%s*$')
+    if k then
+      local want = tonumber(v, 16) or tonumber(v)
+      local done = false
+      for _, port in pairs(manager.machine.ioport.ports) do
+        for fname, field in pairs(port.fields) do
+          if fname == k then
+            field.user_value = want
+            print(('ms1_capture: DIP %q <- %d'):format(k, want))
+            done = true
+          end
+        end
+      end
+      if not done then print(('ms1_capture: WARNING no DIP field named %q'):format(k)) end
+    end
+  end
+end
+
+local scanf = scan and io.open(out..'/scan.txt', 'w') or nil
+
 emu.register_frame_done(function()
   if warm < skip then
     warm = warm + 1
+    return
+  end
+  if scan then
+    if F >= frames then
+      scanf:close()
+      print(('ms1_scan: %s (mode %s) scanned %d frames -> %s'):format(setname, mode, F, out))
+      manager.machine:exit()
+      return
+    end
+    local t = {}
+    for _, r in ipairs(m.regs) do t[#t+1] = ('%s=%04X'):format(r[2], shadow[r[2]]) end
+    scanf:write(('%d %s\n'):format(F, table.concat(t, ' ')))
+    F = F + 1
     return
   end
   if F >= frames then

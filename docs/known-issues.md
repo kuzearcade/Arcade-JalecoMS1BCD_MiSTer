@@ -20,6 +20,8 @@ closed by a measurement, never by reasoning.
 | MS1-10 | A Lua write tap is removed when it is garbage-collected | closed |
 | MS1-11 | The oracle's registers and sprites lag its VRAM by a frame | closed |
 | MS1-12 | A per-frame snapshot cannot reproduce every frame | **OPEN** — bounded and understood; not an RTL defect |
+| MS1-13 | Screen flip is rot180 of the finished frame | closed |
+| MS1-14 | MAME hangs in SDL device init with no video or sound | closed |
 
 ---
 
@@ -296,11 +298,9 @@ The RTL rasterises continuously, as the board does, and has no equivalent.
 With the offsets of MS1-11 applied, the model is pixel-exact on most frames
 but not all:
 
-| capture | mode | frames exact | worst frame | mean non-blank |
-|---|---|---|---|---|
-| avspirit demo | B | 383/397 (96.5%) | 916 px | 56267 |
-| 64street demo | C | 254/297 (85.5%) | 216 px | 19764 |
-| peekaboo demo | D | 168/297 (56.6%) | 7709 px | 57344 |
+Across roughly 2800 frames of eight captures, only **14 exceed 500 differing
+pixels**, and 8 of those are frames where a video register changed between F-1
+and F. Per-capture rates are in `docs/m1-gate.md`.
 
 The residuals are not random. Every one inspected is a small, localised band
 of *layer* pixels — a blinking "PUSH START", a score digit, a character of
@@ -322,7 +322,64 @@ nothing is animating, or to capture at the IRQ instant as Sand Scorpion's
 `SS_TAPS=1` dump does (`docs/PLAN.md` 4.D item 11 is the same lesson: prove
 two frames are the same scene before diffing them).
 
-**Still unexercised by any capture so far**, and needed for the full M1 gate:
-sprite splitting (`sprite_flag` bit 8 is 0 in every frame captured), a flipped
-frame (`screen_flag` bit 0 is 0 throughout), and a non-default page layout
-(every layer seen so far uses N=0 or N=1).
+All three configurations that were unexercised when this entry was written
+have since been captured and pass with zero differing pixels: sprite splitting
+(`bigstrik`), page layouts N=2 and N=3 (`edf`, `hayaosi1`), and a flipped
+frame (`avspirit` with the DIP forced). See `docs/m1-gate.md`.
+
+## MS1-13 — Screen flip is rot180 of the finished frame (closed)
+
+MAME reaches screen flip the long way. `screen_update` gives every tilemap
+`TILEMAP_FLIPX|TILEMAP_FLIPY`, which `tilemap.cpp` implements in two places at
+once — `mappings_update` mirrors the logical/memory tile indices, and
+`tile_update` XORs the global flip into each tile's own flip flags — while
+`draw_sprites` separately mirrors each sprite, inverting `flipx`/`flipy` and
+mapping `sx, sy` to `240-sx, 240-sy`.
+
+The composite of all that is a plain 180-degree rotation of the visible frame,
+because the visible window is symmetric about the bitmap centre: rows 16..239
+of a 256-row bitmap and columns 0..255 are both centred on 127.5.
+
+Sand Scorpion's lesson (`docs/PLAN.md` 4.D item 10) warns that "RTL flip ==
+rot180(RTL no-flip)" is tautological and has to be checked against MAME. So it
+was checked **MAME against MAME**: `avspirit` was captured twice from the same
+starting point, once with the Flip Screen DIP forced, and
+
+    flipped frame  ==  rot180(unflipped frame)      0 differing pixels
+
+Both sides came from MAME, so the identity is a property of the hardware model
+rather than of this code. The first attempt did it the long way instead —
+mirroring source coordinates per layer with a scroll adjustment derived from
+`effective_rowscroll` — and was 61-69% wrong, because the scroll term is not
+what that derivation assumed.
+
+No attract mode in any of the sixteen sets ever sets `screen_flag` bit 0, so
+without the DIP this could not have been tested at all.
+
+## MS1-14 — MAME hangs in SDL device init with no video or sound (closed)
+
+Part way through the M1 captures every MAME invocation began hanging: the
+process started, consumed **zero CPU**, produced no output, never ran the
+autoboot script, and ignored `SIGTERM`. Games that had run correctly minutes
+earlier hung the same way, so it was not the game or the script.
+
+`-video none -sound none` does not stop MAME's SDL OSD from opening real
+video and audio devices, and once that wedged, every later run inherited it.
+
+The fix is to tell SDL not to touch the hardware at all:
+
+```sh
+export SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy
+```
+
+With that, the same command runs at 1553% speed. Every oracle capture must set
+it; `/tmp/gate_run.sh` does, and so should anything that drives MAME here.
+
+Two smaller traps found alongside it, both of which waste time in the same
+way — a job that looks like it is working and is not:
+
+* **MAME must not have a pipe on stdout.** Piping into `grep` or `head` hid
+  every error message, including the ones that would have identified this.
+  Redirect to a file and read the file.
+* `pkill -f mame` matches the shell's own command line and kills the session.
+  Kill by PID from `pgrep -x mame` instead.
