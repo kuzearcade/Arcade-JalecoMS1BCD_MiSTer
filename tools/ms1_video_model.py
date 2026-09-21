@@ -131,13 +131,31 @@ def pal_rgb(words, mode):
 
 # ------------------------------------------------------- priority PROM
 def priority_create(prom):
-    """Port of megasys1_state::priority_create: PROM -> 16 layer orders x 2."""
-    orders = []
+    """Port of megasys1_state::priority_create: PROM -> 16 layer orders.
+
+    TWO stages, and missing the second one is the trap. The first derives a
+    layer order for each sprite-split state by repeatedly asking the PROM
+    "which layer is on top of the remaining set", appending each answer on
+    the right -- so that intermediate value has the TOP layer leftmost.
+
+    The second stage MERGES the two split orders into one, mapping the
+    sprite layer onto 3 and 4, and in doing so reverses them ("reverse the
+    order now"): it consumes the low nibble, which is the BOTTOM layer, and
+    appends it on the right, so after five layers the bottom ends up
+    LEFTMOST. That is what screen_update wants, because it walks the value
+    from the left and draws the first entry with TILEMAP_DRAW_OPAQUE.
+
+    Stopping after stage one leaves an order that is exactly backwards, and
+    the symptom is subtle: scenes whose upper layers happen to be blank still
+    match, and only a scene with an opaque background layer shows it.
+    """
+    U32 = 0xFFFFFFFF
+    out = []
     for pri_code in range(0x10):
-        per_split = []
+        layers_order = [0xFFFFF, 0xFFFFF]
         for offset in range(2):
             enable_mask = 0xF
-            order = 0xFFFFF
+            order1 = 0xFFFFF
             while True:
                 top = prom[pri_code * 0x20 + offset + enable_mask * 2] & 3
                 top_mask = 1 << top
@@ -151,18 +169,46 @@ def priority_create(prom):
                         else:
                             if layer == top: result |= 2
                             else:            result |= 4
-                order = ((order << 4) | top) & 0xFFFFF
+                order1 = ((order1 << 4) | top) & 0xFFFFF
                 enable_mask &= ~top_mask
-                if result & 1 or (result & 6) == 6:
-                    order = 0xFFFFF
+                if (result & 1) or (result & 6) == 6:
+                    order1 = 0xFFFFF
                     break
                 if result == 2:
                     enable_mask = 0
                 if enable_mask == 0:
                     break
-            per_split.append(order)
-        orders.append(per_split)
-    return orders
+            layers_order[offset] = order1
+
+        # merge the two orders, reversing them in the process
+        order = 0xFFFFF
+        i = 5
+        while i > 0:
+            layer0 = layers_order[0] & 0x0F
+            layer1 = layers_order[1] & 0x0F
+            if layer0 != 3:                      # 0, 1, 2 or f
+                if layer1 == 3:
+                    layer = 4
+                    layers_order[0] = (layers_order[0] << 4) & U32
+                else:
+                    layer = layer0
+                    if layer0 != layer1:
+                        order = 0xFFFFF          # split does not simply split
+                        break
+            else:                                # layer0 == 3
+                if layer1 == 3:
+                    layer = 0x43                 # 4 must always be present
+                    order = (order << 4) & U32
+                    i -= 1
+                else:
+                    layer = 3
+                    layers_order[1] = (layers_order[1] << 4) & U32
+            order = ((order << 4) | layer) & U32
+            i -= 1
+            layers_order[0] >>= 4
+            layers_order[1] >>= 4
+        out.append(order & 0xFFFFF)
+    return out
 
 # ------------------------------------------------------------------ capture
 def read_layout(d):
@@ -212,14 +258,23 @@ class Renderer:
         self.orders = priority_create(self.prom) if self.prom else None
 
     def layer_indexed(self, L, st, regs):
-        """Palette-index bitmap for one layer over the visible window, 0xFFFF = transparent."""
+        """(index bitmap, opaque mask) for one layer over the visible window.
+
+        The index is computed for EVERY pixel, pen 15 included. The mask says
+        which pixels are opaque. Both are needed because the bottom layer is
+        drawn with TILEMAP_DRAW_OPAQUE, which puts its transparent pen on
+        screen in its real palette colour rather than leaving the background
+        at index 0 -- so a bottom layer whose pen 15 maps to something other
+        than palette 0 is visible, and cannot be treated as a hole.
+        """
         ctrl = regs[f't{L}_ctrl']; sx = regs[f't{L}_sx']; sy = regs[f't{L}_sy']
         eight = (ctrl >> 4) & 1
         ncols, nrows = tilemap_shape(ctrl)
         mw, mh = ncols * 8, nrows * 8
         vram = st[f'layer{L}']
         gfx = self.layer_gfx[L]
-        out = np.full((VIS_H, VIS_W), 0xFFFF, np.uint16)
+        out = np.zeros((VIS_H, VIS_W), np.uint16)
+        opq = np.zeros((VIS_H, VIS_W), bool)
         ys = (np.arange(VIS_H) + VIS_Y0 + sy) % mh
         xs = (np.arange(VIS_W) + sx) % mw
         for j, ty in enumerate(ys):
@@ -236,9 +291,9 @@ class Renderer:
                     code = int(vram[ti >> 2]) if (ti >> 2) < vram.size else 0
                     tile = (code & 0xFFF) * 4 + (ti & 3)
                 pen = int(gfx[tile % len(gfx), fy, tx % 8]) if len(gfx) else 15
-                if pen != 15:
-                    out[j, i] = 256 * L + (code >> 12) * 16 + pen
-        return out
+                out[j, i] = 256 * L + (code >> 12) * 16 + pen
+                opq[j, i] = (pen != 15)
+        return out, opq
 
     def sprites_indexed(self, st2, regs):
         """Sprite buffer over the visible window: (value, priority) or None."""
@@ -296,13 +351,28 @@ class Renderer:
                     buf[dy, dx] = (pen + col) | (pri << 14) | 0x8000
 
     def render(self, F):
+        # THE REGISTERS COME FROM FRAME F-1, not F.
+        #
+        # The capture reads them at frame_done, which runs after MAME has
+        # already rendered the frame, and by then the game's vblank handler
+        # has written the values for the NEXT frame. Measured, not assumed:
+        # at avspirit frame 400 the captured scroll is t0=0x54/t1=0xA8 while
+        # the frame MAME drew needs 0x53/0xA6 -- exactly frame 399's values,
+        # and the two layers' corrections (-1 and -2) are in the same ratio
+        # as their parallax rates, which is what makes it a frame offset
+        # rather than a constant fudge.
+        #
+        # The error is invisible on a static screen and shows up as a few
+        # dozen scattered pixels on a scrolling one, which is why the first
+        # frames checked all passed. VRAM and the palette are NOT shifted:
+        # they are read at the same instant and match at F, tested explicitly.
         st = read_state(self.dir, F, self.info)
-        regs = read_regs(self.dir, F)
+        regs = read_regs(self.dir, F - 1 if F >= 1 else 0)
         st2 = read_state(self.dir, F - 2, self.info) if F >= 2 else st
         active = regs.get('active_layers', 0)
         sflag = regs.get('sprite_flag', 0)
 
-        pri = self.orders[(active & 0x0F00) >> 8][1 if (sflag >> 8) & 1 else 0] if self.orders else 0xFFFFF
+        pri = self.orders[(active & 0x0F00) >> 8] if self.orders else 0xFFFFF
         if pri == 0xFFFFF:
             pri = 0x04132
         reallyactive = 0
@@ -313,7 +383,7 @@ class Renderer:
         layers = {}
         for L in range(self.nlayers):
             if (act >> L) & 1:
-                layers[L] = self.layer_indexed(L, st, regs)
+                layers[L] = self.layer_indexed(L, st, regs)   # (idx, opaque)
 
         idx = np.zeros((VIS_H, VIS_W), np.uint16)
         prio = np.zeros((VIS_H, VIS_W), np.uint8)
@@ -325,12 +395,11 @@ class Renderer:
             p = (p << 4) & 0xFFFFF
             if layer in (0, 1, 2):
                 if layer in layers:
-                    lay = layers[layer]
-                    m = lay != 0xFFFF
+                    lay, m = layers[layer]
                     if first:
-                        idx[:] = 0
-                        idx[m] = lay[m]
-                        prio[:] = primask       # OPAQUE draw stamps everywhere
+                        # TILEMAP_DRAW_OPAQUE: every pixel, pen 15 included
+                        idx[:] = lay
+                        prio[:] = primask
                         first = False
                     else:
                         idx[m] = lay[m]

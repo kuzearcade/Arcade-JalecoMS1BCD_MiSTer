@@ -44,6 +44,12 @@ local out    = os.getenv('MS1_OUT')    or 'sim/oracle/traces/ms1'
 local frames = tonumber(os.getenv('MS1_FRAMES') or '120')
 local do_pix = os.getenv('MS1_PIX')   == '1'
 local do_st  = os.getenv('MS1_STATE') == '1'
+-- MS1_SKIP: run this many frames before dumping anything, so deep attract
+-- (the demo play, where the sprites are) is reachable without writing
+-- thousands of files. F still counts from 0 at the first DUMPED frame, so
+-- the F-1 register rule and the F-2 sprite rule stay valid within a run.
+local skip   = tonumber(os.getenv('MS1_SKIP') or '0')
+local warm   = 0
 
 local MODE = {
   avspirit='B', monkelf='B', edf='B', edfa='B', edfb='B', edfu='B', hayaosi1='B',
@@ -113,9 +119,19 @@ for _, r in ipairs(m.regs) do shadow[r[2]] = 0; byaddr[r[1]] = r[2] end
 -- kept alive. Let it go out of scope and Lua collects it, the tap is silently
 -- removed, and every register reads back 0 forever -- which is exactly what
 -- happened on the first attempt (docs/known-issues.md MS1-10). Hence TAP.
+-- Count register writes that land while the beam is inside the visible area.
+-- scroll_w calls screen->update_partial(vpos()-1), so a mid-frame write makes
+-- MAME render the top of the frame with the old value and the bottom with the
+-- new one. A single end-of-frame snapshot cannot reproduce such a frame, and
+-- the consumer needs to know which frames those are rather than guessing.
+local midframe = 0
 TAP = mem:install_write_tap(m.tapwin[1], m.tapwin[2], 'ms1regs', function(offset, data, mask)
   local name = byaddr[offset]
-  if name then shadow[name] = data & 0xFFFF end
+  if name then
+    shadow[name] = data & 0xFFFF
+    local v = scr:vpos()
+    if v >= 16 and v < 240 then midframe = midframe + 1 end
+  end
   return data
 end)
 
@@ -152,7 +168,9 @@ local function dump_state()
   f:close()
   local g = io.open(('%s/state/r%d.txt'):format(out, F), 'w')
   for _, r in ipairs(m.regs) do g:write(('%s %04X\n'):format(r[2], shadow[r[2]])) end
+  g:write(('midframe_writes %04X\n'):format(midframe))
   g:close()
+  midframe = 0
 end
 
 local function dump_pixels()
@@ -166,6 +184,10 @@ local function dump_pixels()
 end
 
 emu.register_frame_done(function()
+  if warm < skip then
+    warm = warm + 1
+    return
+  end
   if F >= frames then
     idx:close()
     print(('ms1_capture: %s (mode %s) captured %d frames -> %s'):format(setname, mode, F, out))
