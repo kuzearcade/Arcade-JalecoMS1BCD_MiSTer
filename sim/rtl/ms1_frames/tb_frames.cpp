@@ -349,6 +349,11 @@ int main(int argc, char **argv) {
 				// captured and restored, but were not being COMPARED -- so a
 				// difference in any of them was invisible to this probe.
 				std::vector<uint16_t> plane, ob1, ob2, sb1;
+				// Scalars. The probe compared eleven arrays and no scalars at
+				// all, so the interrupt latches -- the very thing the
+				// bisection pointed at -- could differ while it reported
+				// "game state is identical".
+				std::vector<uint16_t> sc;
 			};
 			auto grab = [&](Snap &sn) {
 				auto cp = [](auto &src, size_t n) {
@@ -367,6 +372,20 @@ int main(int argc, char **argv) {
 				sn.ob2  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b2, 4096);
 				sn.sb1  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b1, 4096);
 				sn.plane = cp(R->ms1bcd_core__DOT__u_video__DOT__u_spr__DOT__plane, 65536);
+				auto &M = R->ms1bcd_core__DOT__u_main__DOT__irq1_h;
+				(void)M;
+				sn.sc = {
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__irq1_h,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__irq2_h,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__irq4_h,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__iack_d,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__int1_dd,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__bufi,
+					(uint16_t)R->ms1bcd_core__DOT__u_main__DOT__buf_busy,
+					(uint16_t)R->ms1bcd_core__DOT__hcount,
+					(uint16_t)R->ms1bcd_core__DOT__vcount,
+					(uint16_t)R->ms1bcd_core__DOT__pdiv,
+				};
 			};
 			const unsigned rmask = (unsigned)envl("MS1_SS_RST", 0);
 			auto pulse_rst = [&]() {
@@ -434,6 +453,14 @@ int main(int argc, char **argv) {
 			t += cmp("obj_b2", A.ob2, B.ob2);
 			t += cmp("spr_b1", A.sb1, B.sb1);
 			t += cmp("sprplane", A.plane, B.plane);
+			static const char *scn[] = {"irq1_h","irq2_h","irq4_h","iack_d",
+			                            "int1_dd","bufi","buf_busy",
+			                            "hcount","vcount","pdiv"};
+			for (size_t i = 0; i < A.sc.size(); i++)
+				if (A.sc[i] != B.sc[i]) {
+					printf("    scalar %-9s A=%04X  B=%04X\n", scn[i], A.sc[i], B.sc[i]);
+					t++;
+				}
 			if (!t) printf("    none -- game state is identical\n");
 			return 0;
 		}

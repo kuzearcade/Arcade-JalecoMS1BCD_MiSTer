@@ -956,18 +956,65 @@ state that was already being restored correctly. The image loopback cannot see
 this class of bug at all, because it never lets the core run -- it proves
 capture and restore agree, not that the set of captured things is complete.
 
-**Next**, in order of how well they fit "modified during a span, outside every
-array the probe compares, and able to gate a code path":
+### Bisected, and cornered inside the CPU
 
-1. fx68k's internal interrupt/SR state. The park monitor reconstructs the
-   registers and returns through RTE, but a pending interrupt latched inside
-   the CPU at save time is not obviously carried.
-2. TLCS-90 state beyond the 16 words it exposes, and `nmk004_periph` beyond
-   its 24 -- both were inherited from NMK16 and neither was written for a
-   board with this protection handshake.
-3. A bisection would settle it faster than more inspection: hold each
-   subsystem in reset across the restore in turn and see which one makes the
-   divergence disappear.
+A debug reset mask (`ss_rst_dbg`) was used to make each subsystem enter both
+spans from an identical state, with a control mask that pulses the same 80
+ticks and resets nothing:
+
+| mask | | result |
+|---|---|---|
+| 0 | no pulse | diverges |
+| 8 | pulse, resets **nothing** | identical to mask 0 -- the pulse is not a confound |
+| 1 | + sound reset | changes the pattern (explained by MS1-36, not a datapath) |
+| 2 | + MCU reset | identical to mask 0 |
+| 4 | + sprite reset | identical to mask 0 |
+
+Neither the MCU nor the sprite engine holds the missing state. Chasing the
+remaining candidate -- the CPU's interrupt path -- found and fixed a real
+defect that was NOT this one (see below), and then the probe was extended to
+compare scalars, which it had never done: eleven arrays and no scalars at all,
+so the interrupt latches could have differed while it reported "identical".
+
+With `irq1_h`, `irq2_h`, `irq4_h`, `iack_d`, `int1_dd`, `bufi`, `buf_busy` and
+the raster all compared, at K = 1..4:
+
+```
+K=1,2,3  none -- game state is identical
+K=4      wram 98 words 0x07F76..0x07FFF,  vram2 2 words
+         (every scalar still identical)
+```
+
+So at the moment work RAM and the text layer diverge, memory is identical,
+every interrupt latch is identical and the raster phase is identical. **The
+difference can only be inside fx68k** -- its registers, PC or SR, none of
+which reach RAM until something pushes them.
+
+That is the boundary of what this probe can see. The park monitor reconstructs
+the programmer's model by pushing D0-D7/A0-A6 to the game's stack and
+restoring SSP/USP, returning through RTE; anything fx68k holds that is not in
+the programmer's model is not carried, and cannot be observed from outside
+either.
+
+**The honest next step is not another guess.** It is to give fx68k itself a
+savestate interface, as the TLCS-90 already has -- 16 words exposing its
+registers directly -- so the image carries the CPU rather than reconstructing
+it through a monitor. That is a change to a vendored core, which is why it was
+avoided, and it is now the only remaining candidate.
+
+### Found while chasing it: the park's acknowledge ate a game interrupt
+
+`ms1_main.sv` retired one pending interrupt on ANY acknowledge cycle. The
+savestate park raises **level 7** and is acknowledged like any other, so taking
+a savestate silently cleared whatever the game had pending -- the run that
+resumed was no longer the run that was saved. The 68000 puts the acknowledged
+level on A3:A1 and this board uses only levels 1, 2 and 4, so the retirement is
+now gated on `iack_level != 7`.
+
+This is a genuine defect and the fix is kept, but it did not change the
+symptom by a single pixel. It is recorded because it is the third instance in
+this milestone of the same theme: **the savestate mechanism perturbing the
+machine it is supposed to be photographing** (MS1-35, MS1-36, and this).
 
 ## MS1-34 — A restore written in its own always block does nothing, silently (closed)
 

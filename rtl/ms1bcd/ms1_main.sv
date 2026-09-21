@@ -490,6 +490,7 @@ module ms1_main (
 		if (ss_w & ss_misc & (ss_addr[3:0] == 4'd1)) iack_d <= ss_wdata[0];
 		else iack_d <= iack;
 	wire iack_edge = iack & ~iack_d;
+	wire [2:0] iack_level = eab[3:1];
 	always @(posedge clk) begin
 		if (reset) begin irq1_h <= 1'b0; irq2_h <= 1'b0; irq4_h <= 1'b0; end
 		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd1)) begin
@@ -499,7 +500,15 @@ module ms1_main (
 			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
 			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
 			if (mcu_irq2)                  irq2_h <= 1'b1;
-			if (iack_edge) begin
+			// MS1-23 says one acknowledge CYCLE retires exactly one interrupt.
+			// It must also retire one of the GAME's interrupts only. The
+			// savestate park raises level 7 and is acknowledged like any
+			// other, and this chain would then clear whatever the game had
+			// pending -- so taking a savestate silently ate an interrupt, and
+			// the run that had been saved was no longer the run that resumed.
+			// The 68000 puts the acknowledged level on A3:A1; the board uses
+			// only 1, 2 and 4, so level 7 is the park's and nothing else.
+			if (iack_edge && iack_level != 3'd7) begin
 				if      (irq4_h) irq4_h <= 1'b0;
 				else if (irq2_h) irq2_h <= 1'b0;
 				else if (irq1_h) irq1_h <= 1'b0;
