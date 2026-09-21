@@ -342,6 +342,10 @@ int main(int argc, char **argv) {
 			auto *R = top->rootp;
 			struct Snap {
 				std::vector<uint16_t> wram, v0, v1, v2, pal, obj, spr;
+				// The sprite plane and the two-deep object/sprite buffers are
+				// captured and restored, but were not being COMPARED -- so a
+				// difference in any of them was invisible to this probe.
+				std::vector<uint16_t> plane, ob1, ob2, sb1;
 			};
 			auto grab = [&](Snap &sn) {
 				auto cp = [](auto &src, size_t n) {
@@ -356,6 +360,10 @@ int main(int argc, char **argv) {
 				sn.pal  = cp(R->ms1bcd_core__DOT__u_main__DOT__pal, 1024);
 				sn.obj  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj, 4096);
 				sn.spr  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b2, 4096);
+				sn.ob1  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b1, 4096);
+				sn.ob2  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b2, 4096);
+				sn.sb1  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b1, 4096);
+				sn.plane = cp(R->ms1bcd_core__DOT__u_video__DOT__u_spr__DOT__plane, 65536);
 			};
 			auto runf = [&](long n) {
 				long got = 0; uint64_t g = 0;
@@ -378,11 +386,18 @@ int main(int argc, char **argv) {
 
 			auto cmp = [&](const char *nm, std::vector<uint16_t> &a,
 			               std::vector<uint16_t> &b) {
-				size_t n = 0, first = 0;
+				size_t n = 0, first = 0, last = 0;
 				for (size_t i = 0; i < a.size(); i++)
-					if (a[i] != b[i]) { if (!n) first = i; n++; }
-				if (n) printf("    %-10s %6zu words   first at 0x%05zX  (A=%04X B=%04X)\n",
-				              nm, n, first, a[first], b[first]);
+					if (a[i] != b[i]) { if (!n) first = i; last = i; n++; }
+				if (!n) return n;
+				printf("    %-10s %6zu words   0x%05zX..0x%05zX%s\n", nm, n, first, last,
+				       (last - first + 1 == n) ? "  (contiguous)" : "");
+				size_t shown = 0;
+				for (size_t i = first; i <= last && shown < 10; i++)
+					if (a[i] != b[i]) {
+						printf("        0x%05zX  A=%04X  B=%04X\n", i, a[i], b[i]);
+						shown++;
+					}
 				return n;
 			};
 			printf("\nnon-invasive divergence after %ld frames:\n", K);
@@ -394,6 +409,10 @@ int main(int argc, char **argv) {
 			t += cmp("palette", A.pal, B.pal);
 			t += cmp("objram", A.obj, B.obj);
 			t += cmp("sprram", A.spr, B.spr);
+			t += cmp("obj_b1", A.ob1, B.ob1);
+			t += cmp("obj_b2", A.ob2, B.ob2);
+			t += cmp("spr_b1", A.sb1, B.sb1);
+			t += cmp("sprplane", A.plane, B.plane);
 			if (!t) printf("    none -- game state is identical\n");
 			return 0;
 		}

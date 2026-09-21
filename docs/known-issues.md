@@ -919,10 +919,54 @@ the cause. Note the sound side is ruled out by construction: `latch_to_main`
 is unconnected in `ms1bcd_core`, so the YM2151's unrestorable internal phase
 has no path to the video.
 
-The next step is to peek at K=4 to pin the divergence to a single frame, and to
-add the sprite plane and the four object/sprite buffers to the non-invasive
-probe -- they are in the image and restored, but they are not yet in the list
-the probe compares, so a difference there would currently be invisible.
+### 2026-09-21: the plane is exonerated and the shape of the bug changes
+
+The sprite plane and all four object/sprite buffers were added to the
+non-invasive probe. They are **bit-identical**, as are palette, object RAM,
+vram0 and vram1. So the blit reproduces exactly across a restore, and the
+sprite-FSM capture added earlier -- 29 fields, on a hypothesis that was wrong --
+is not load-bearing for this bug (it is kept because a save can legitimately
+land mid-pass).
+
+Swept K = 1..5, the divergence is **pinned to frame 4** and is **static**: K=4
+and K=5 report the same 98 words, the same addresses, the same values. It
+happens once and does not compound.
+
+```
+wram   98 words  0x07F76..0x07FFF   -- every one has B=0000
+    0x07F76  A=3528  B=0000     0x07F80  A=FFFF  B=0000
+    0x07F78  A=35D2  B=0000     0x07F82  A=0043  B=0000
+vram2   2 words
+    0x0027B  A=F034  B=F030     0x0029B  A=F033  B=F030
+```
+
+`0x07FFF` is the last word of work RAM, so that range is the top of the stack.
+**A has ~276 bytes of stack data there; B has none.** The two VRAM cells are
+one tilemap row apart: a two-digit field reading "43" in A against "00" in B.
+
+So B has not mistimed anything -- B has never executed what A executed. And
+that reframes the defect. The round trip is save, run A, restore, run B; if the
+image were complete B would reproduce A. The difference being static means
+there is state that **span A modified and the image does not carry**, so at
+restore time it holds span A's final value instead of the save-time value.
+
+This is why six targeted fixes changed nothing by a single pixel: each added
+state that was already being restored correctly. The image loopback cannot see
+this class of bug at all, because it never lets the core run -- it proves
+capture and restore agree, not that the set of captured things is complete.
+
+**Next**, in order of how well they fit "modified during a span, outside every
+array the probe compares, and able to gate a code path":
+
+1. fx68k's internal interrupt/SR state. The park monitor reconstructs the
+   registers and returns through RTE, but a pending interrupt latched inside
+   the CPU at save time is not obviously carried.
+2. TLCS-90 state beyond the 16 words it exposes, and `nmk004_periph` beyond
+   its 24 -- both were inherited from NMK16 and neither was written for a
+   board with this protection handshake.
+3. A bisection would settle it faster than more inspection: hold each
+   subsystem in reset across the restore in turn and see which one makes the
+   divergence disappear.
 
 ## MS1-34 — A restore written in its own always block does nothing, silently (closed)
 
