@@ -32,6 +32,8 @@ closed by a measurement, never by reasoning.
 | MS1-22 | Bus traces can only agree until an interrupt lands apart | **OPEN** — a limit of the method, bounded and understood |
 | MS1-23 | One interrupt-acknowledge CYCLE must retire one interrupt | closed |
 | MS1-24 | The protection MCU needs ~48 frames of boot before it answers | closed |
+| MS1-25 | MAME persists a forced DIP into cfg/ and re-reads it forever | closed |
+| MS1-26 | A relative -rompath reads as a broken romset | closed |
 
 ---
 
@@ -604,3 +606,55 @@ Two consequences:
 The numbers to expect on avspirit, measured: about 30,000 main-CPU accesses per
 frame once running, 1 INT1 edge per frame, and IRQ 2 roughly ten times per
 frame once the protection conversation is in flow.
+
+## MS1-25 — MAME persists a forced DIP into cfg/ and re-reads it forever (closed)
+
+Forcing the Flip Screen DIP for the M1 flipped-frame capture (MS1-13) left
+this behind in `cfg/avspirit.cfg`:
+
+```xml
+<port tag=":DSW2" type="DIPSWITCH" mask="1" defvalue="1" value="0" />
+```
+
+MAME writes per-game settings on exit and reads them back on every later run.
+**`-noreadconfig` does not prevent this** -- it governs `mame.ini`, not
+`cfg/<game>.cfg`. So one deliberately-forced DIP silently changed every
+avspirit run afterwards, including the input-port capture whose values were
+then fed to the RTL sim.
+
+The consequence was a full day's worth of wrong conclusion. The core rendered
+a **flipped** screen because the DIP said so, was compared against
+`avspirit_long` -- captured *before* the contamination, therefore unflipped --
+and the mismatch looked like a video bug. Every other signal said the video
+was fine: the sim's VRAM, palette and object RAM were byte-identical to
+MAME's, the protection handshake matched for 131 transactions, and the same
+video RTL fed the sim's own state through `sim/rtl/video_state` produced
+MAME's frame with zero differing pixels. Four correct measurements against one
+contaminated constant, and the constant won for far too long.
+
+The tell was there to be read: uncontaminated 64street reports `DSW2 = 0x00FD`
+(bit 0 set) while avspirit reported `0x00FC` (bit 0 clear). Two games of the
+same family disagreeing on the default of the same DIP bit is not a thing that
+happens.
+
+**Rules that follow.** Delete `cfg/<game>.cfg` before any measurement run, or
+keep forced-DIP runs in a separate `-cfg_directory`. Never take an input-port
+capture without checking for a saved override first. And treat a captured
+"constant" as evidence with a provenance, not as ground truth: it has a
+timestamp and a history like everything else.
+
+## MS1-26 — A relative -rompath reads as a broken romset (closed)
+
+Every MAME command in this project passes `-rompath mame_roms`, which resolves
+against the **current working directory**. Run from the project root it works;
+run from anywhere else MAME prints
+
+```
+jaleco_a.spirit_5.5b NOT FOUND (tried in avspirit)
+```
+
+for every file, which reads exactly like a missing or corrupt romset and is
+neither -- the zips are present and intact.
+
+`tools/run_oracle_captures.sh` now derives an absolute `ROMS` from its own
+location. Any new script should do the same rather than assuming a cwd.
