@@ -4,9 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Six are open**: two recorded during M0 and answerable off-board, MS1-31,
-which needs the board, MS1-32 / MS1-33 from M3, and MS1-36, which is a
-contradiction between a measurement and the schematic as read.
+**Five are open**: two recorded during M0 and answerable off-board, MS1-31,
+which needs the board, and MS1-32 / MS1-33 from M3.
 
 | | | |
 |---|---|---|
@@ -45,7 +44,7 @@ contradiction between a measurement and the schematic as read.
 | MS1-33 | A savestate round trip leaves one counter digit behind | **OPEN** — bounded at 25 pixels, cause not yet named |
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
-| MS1-36 | Resetting the sound subsystem changes main-CPU behaviour, and nothing explains how | **OPEN** — demonstrated with a control, mechanism unknown |
+| MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
 
 ---
 
@@ -1053,7 +1052,48 @@ savestates: if sound state can influence the main CPU by some path, that
 matters for the M2 gate 3 and 4 numbers as well, which were taken on the
 assumption that the two sides are independent.
 
-**To settle it**: drive the sound reset in a plain run (no savestate involved)
-and diff the frames against an unreset run. If they differ, the coupling is
-real and unconditional, and a signal-by-signal trace of the elaborated netlist
--- not the source -- is the way to find it.
+### Settled: there is no datapath, only a handshake
+
+Two plain 70-frame runs of the reference sim, identical but for the sound
+subsystem being held in reset for the whole of one of them, no savestate
+anywhere near either:
+
+```
+frames compared 70: 70 identical, 0 differing; 16 with content
+```
+
+Sixteen of those frames carry real content, so this is not the vacuous
+all-black comparison that has caught this project before. **Holding the sound
+subsystem in reset has no effect on the video whatsoever.** The reading of the
+design was right: `latch_to_main` is unconnected and nothing else `ms1_sound`
+drives reaches the main CPU or the video.
+
+The coupling is in the savestate handshake, and it is one this project
+introduced (`ms1bcd_core.sv:254`):
+
+```systemverilog
+assign ss_frozen = ss_m68k_parked & ss_mcu_frozen & ss_snd_parked;
+```
+
+A park completes only when all three CPUs have parked, and the testbench spins
+on `ss_frozen`. Reset the sound CPU and it restarts its program, so next time
+it parks at a different instruction and takes a different number of ticks to
+reach it. The park therefore lasts a different length of time, and everything
+that free-runs during a park -- the raster, the sprite pass, the object-buffer
+copy -- advances by a different amount before the snapshot is taken. Sound
+never touches the video; it changes WHEN THE PARK ENDS.
+
+Two consequences worth stating:
+
+- **M2 gates 3 and 4 are not in doubt.** Those numbers were taken on plain
+  runs with no savestate involved, and the assumption behind them -- that the
+  sound and main sides are independent -- is now measured rather than merely
+  argued.
+- **Any savestate measurement that parks is sensitive to every CPU's park
+  latency, not just the one being studied.** That is the same lesson as
+  MS1-35 from a different direction: the parking mechanism perturbs, and a
+  bisection which resets a subsystem is also perturbing that subsystem's park
+  time. The reset-mask bisection result for the MCU and the sprite engine
+  (no effect at all) is unaffected, since "no change" cannot be manufactured
+  this way -- but a bisection that HAD shown a change would have needed this
+  control before it could be believed.

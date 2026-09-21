@@ -69,7 +69,9 @@ int main(int argc, char **argv) {
 	top->spr_rom_ready = 1;
 	top->ss_freeze = 0; top->ss_resume = 0; top->ss_active = 0;
 	top->ss_addr = 0; top->ss_wr = 0; top->ss_wdata = 0; top->ss_replay = 0;
-	top->ss_rst_dbg = 0;
+	// MS1_RST_DBG holds the debug reset mask for a WHOLE plain run, with no
+	// savestate anywhere near it -- the control MS1-36 needs.
+	top->ss_rst_dbg = (unsigned)envl("MS1_RST_DBG", 0);
 	top->l0_rom_ready = 1; top->l1_rom_ready = 1; top->l2_rom_ready = 1;
 
 	auto serve = [&]() {
@@ -371,7 +373,9 @@ int main(int argc, char **argv) {
 				if (!rmask) return;
 				top->ss_rst_dbg = rmask;
 				for (int i = 0; i < 64; i++) tick();
-				top->ss_rst_dbg = 0;
+				// MS1_RST_DBG holds the debug reset mask for a WHOLE plain run, with no
+	// savestate anywhere near it -- the control MS1-36 needs.
+	top->ss_rst_dbg = (unsigned)envl("MS1_RST_DBG", 0);
 				for (int i = 0; i < 16; i++) tick();
 			};
 			auto runf = [&](long n) {
