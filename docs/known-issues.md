@@ -17,6 +17,7 @@ closed by a measurement, never by reasoning.
 | MS1-7 | The local romsets predate MAME 0.289's filename changes | closed |
 | MS1-8 | `hayaosi1` runs its samples at 2 MHz for unknown reasons | **OPEN** — MAME says "unknown OSC + divider combo" |
 | MS1-9 | `screen:pixels()` returns three values, not one | closed |
+| MS1-10 | A Lua write tap is removed when it is garbage-collected | closed |
 
 ---
 
@@ -223,3 +224,39 @@ f:write(px)
 Sand Scorpion's `tools/ss_frames.py` would have caught this too — it raises
 if a raw frame is not exactly `W*H` pixels. That assert is worth keeping in
 this project's consumer for the same reason.
+
+## MS1-10 — A Lua write tap is removed when it is garbage-collected (closed)
+
+Several Mega System 1 video registers are **write-only** — `active_layers`,
+`screen_flag` and System C's `sprite_bank` are all mapped with `.w(...)` and
+nothing else. They cannot be read back through the CPU's program space, and
+reading the register window wholesale would fire every real read handler in
+range, perturbing the machine being measured.
+
+So the capture taps writes instead:
+
+```lua
+mem:install_write_tap(win_lo, win_hi, 'ms1regs', function(offset, data, mask)
+  ...
+end)
+```
+
+Every register read back as `0000` at frame 149 of a game that was visibly
+drawing. The tap was never firing. `install_write_tap` returns a
+`memory_passthrough_handler`, and **the tap lives only as long as that handle
+does** — discarding the return value lets Lua collect it and the tap is
+silently uninstalled. Assigning it to a variable that outlives the callback
+fixes it:
+
+```lua
+TAP = mem:install_write_tap(...)
+```
+
+with `active_layers=000F` and `t2_ctrl=0011` appearing immediately.
+
+The failure mode is the dangerous one: not an error, but a plausible constant.
+Zeroed registers would have been read as "the game has not configured the
+video yet", and every layer-enable and tile-size decision in the reference
+model would have been made from fiction. It was caught by asking the question
+that MS1-3 and MS1-9 were also caught by — *does this output actually change
+when it should?* — rather than by reading it once and believing it.
