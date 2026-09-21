@@ -18,6 +18,8 @@ closed by a measurement, never by reasoning.
 | MS1-8 | `hayaosi1` runs its samples at 2 MHz for unknown reasons | **OPEN** — MAME says "unknown OSC + divider combo" |
 | MS1-9 | `screen:pixels()` returns three values, not one | closed |
 | MS1-10 | A Lua write tap is removed when it is garbage-collected | closed |
+| MS1-11 | The oracle's registers and sprites lag its VRAM by a frame | closed |
+| MS1-12 | A per-frame snapshot cannot reproduce every frame | **OPEN** — bounded and understood; not an RTL defect |
 
 ---
 
@@ -260,3 +262,67 @@ video yet", and every layer-enable and tile-size decision in the reference
 model would have been made from fiction. It was caught by asking the question
 that MS1-3 and MS1-9 were also caught by — *does this output actually change
 when it should?* — rather than by reading it once and believing it.
+
+## MS1-11 — The oracle's registers and sprites lag its VRAM by a frame (closed)
+
+The capture reads everything at `frame_done`, which runs after MAME has
+rendered the frame. By then the game's vblank handler has already written the
+values for the *next* frame. The three sources do not share one offset, and
+each was measured rather than assumed:
+
+| source | frame to use | how it was established |
+|---|---|---|
+| VRAM, palette | **F** | F−1 raises the error from 1650 px to 107197 px over 57 frames |
+| video registers | **F−1** | see below |
+| object + sprite RAM | **F−3** | F−2 leaves 23692 px over 13 frames, F−3 leaves 1468, F−4 leaves 23296 |
+
+The register offset is the interesting one. At avspirit frame 400 the captured
+scroll is `t0=0x54, t1=0xA8`, and the frame MAME actually drew needs
+`0x53, 0xA6` — exactly frame 399's values. What proves it is a frame offset
+rather than a constant fudge is that the two corrections, −1 and −2, are in
+the same ratio as the two layers' parallax rates. A fixed pixel offset would
+have been equal on both layers.
+
+The sprite offset is MAME's documented "sprites are TWO frames ahead"
+(`screen_vblank` does `buffer2 <- buffer <- live`, and `draw_sprites` reads
+`buffer2`) plus this same one-frame capture lag.
+
+None of this is a property of the hardware. It is a property of reading state
+from an emulator at one instant per frame, and it exists only in the oracle.
+The RTL rasterises continuously, as the board does, and has no equivalent.
+
+## MS1-12 — A per-frame snapshot cannot reproduce every frame (OPEN)
+
+With the offsets of MS1-11 applied, the model is pixel-exact on most frames
+but not all:
+
+| capture | mode | frames exact | worst frame | mean non-blank |
+|---|---|---|---|---|
+| avspirit demo | B | 383/397 (96.5%) | 916 px | 56267 |
+| 64street demo | C | 254/297 (85.5%) | 216 px | 19764 |
+| peekaboo demo | D | 168/297 (56.6%) | 7709 px | 57344 |
+
+The residuals are not random. Every one inspected is a small, localised band
+of *layer* pixels — a blinking "PUSH START", a score digit, a character of
+animating text — with no sprite pixel involved, at a frame where the game
+changed that VRAM during the vblank in which the snapshot was taken. Mode D's
+lower rate reflects that peekaboo's screen is full (57344 non-blank every
+frame, so there is always text animating), not that mode D is worse
+understood: 270 of its 297 frames are within 50 pixels, and only three exceed
+200.
+
+This is the oracle's granularity, not an RTL defect, and it cannot be fixed by
+choosing a different frame offset — the three sources already disagree about
+which frame they belong to (MS1-11), which is exactly what a single snapshot
+per frame cannot express.
+
+**Open** because it bounds what the M1 gate can claim from this method. When a
+frame must be proven exactly, the answer is to compare against a frame where
+nothing is animating, or to capture at the IRQ instant as Sand Scorpion's
+`SS_TAPS=1` dump does (`docs/PLAN.md` 4.D item 11 is the same lesson: prove
+two frames are the same scene before diffing them).
+
+**Still unexercised by any capture so far**, and needed for the full M1 gate:
+sprite splitting (`sprite_flag` bit 8 is 0 in every frame captured), a flipped
+frame (`screen_flag` bit 0 is 0 throughout), and a non-default page layout
+(every layer seen so far uses N=0 or N=1).

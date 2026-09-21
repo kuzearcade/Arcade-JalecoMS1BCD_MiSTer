@@ -273,26 +273,34 @@ class Renderer:
         mw, mh = ncols * 8, nrows * 8
         vram = st[f'layer{L}']
         gfx = self.layer_gfx[L]
-        out = np.zeros((VIS_H, VIS_W), np.uint16)
-        opq = np.zeros((VIS_H, VIS_W), bool)
         ys = (np.arange(VIS_H) + VIS_Y0 + sy) % mh
         xs = (np.arange(VIS_W) + sx) % mw
-        for j, ty in enumerate(ys):
-            row = ty // 8
-            fy = ty % 8
-            for i, tx in enumerate(xs):
-                col = tx // 8
-                if eight:
-                    ti = scan_8x8(col, row, ncols)
-                    code = int(vram[ti]) if ti < vram.size else 0
-                    tile = code & 0xFFF
-                else:
-                    ti = scan_16x16(col, row, ncols)
-                    code = int(vram[ti >> 2]) if (ti >> 2) < vram.size else 0
-                    tile = (code & 0xFFF) * 4 + (ti & 3)
-                pen = int(gfx[tile % len(gfx), fy, tx % 8]) if len(gfx) else 15
-                out[j, i] = 256 * L + (code >> 12) * 16 + pen
-                opq[j, i] = (pen != 15)
+        row = (ys // 8)[:, None]                      # (H,1)
+        col = (xs // 8)[None, :]                      # (1,W)
+        fy  = (ys % 8)[:, None]
+        fx  = (xs % 8)[None, :]
+        if eight:
+            ti = (col * TILES_PER_PAGE_Y
+                  + (row // TILES_PER_PAGE_Y) * TILES_PER_PAGE * (ncols // TILES_PER_PAGE_X)
+                  + (row % TILES_PER_PAGE_Y))
+            cell = ti
+        else:
+            ti = ((((col // 2) * (TILES_PER_PAGE_Y // 2))
+                   + ((row // 2) // (TILES_PER_PAGE_Y // 2)) * (TILES_PER_PAGE // 4) * (ncols // TILES_PER_PAGE_X)
+                   + ((row // 2) % (TILES_PER_PAGE_Y // 2))) * 4
+                  + (row & 1) + (col & 1) * 2)
+            cell = ti >> 2
+        ti, cell = np.broadcast_arrays(ti, cell)
+        code = vram[np.clip(cell, 0, vram.size - 1)].astype(np.int64)
+        if eight:
+            tile = code & 0xFFF
+        else:
+            tile = (code & 0xFFF) * 4 + (ti & 3)
+        n = max(len(gfx), 1)
+        pen = (gfx[tile % n, np.broadcast_to(fy, tile.shape), np.broadcast_to(fx, tile.shape)]
+               if len(gfx) else np.full(tile.shape, 15, np.uint8))
+        out = (256 * L + (code >> 12) * 16 + pen).astype(np.uint16)
+        opq = (pen != 15)
         return out, opq
 
     def sprites_indexed(self, st2, regs):
@@ -368,7 +376,13 @@ class Renderer:
         # they are read at the same instant and match at F, tested explicitly.
         st = read_state(self.dir, F, self.info)
         regs = read_regs(self.dir, F - 1 if F >= 1 else 0)
-        st2 = read_state(self.dir, F - 2, self.info) if F >= 2 else st
+        # Sprites come from frame F-3. MAME's own comment says sprites are
+        # TWO frames ahead (screen_vblank does buffer2<-buffer<-live, and
+        # draw_sprites reads buffer2), and the capture's own one-frame lag --
+        # the same one that shifts the registers above -- makes it three.
+        # Measured across the demo: F-2 leaves 23692 differing pixels over 13
+        # frames, F-3 leaves 1468, F-4 leaves 23296.
+        st2 = read_state(self.dir, F - 3, self.info) if F >= 3 else st
         active = regs.get('active_layers', 0)
         sflag = regs.get('sprite_flag', 0)
 
