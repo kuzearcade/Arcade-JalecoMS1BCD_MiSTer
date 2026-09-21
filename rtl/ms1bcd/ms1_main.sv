@@ -47,11 +47,15 @@ module ms1_main (
 	// program ROM, served by the caller (512 KB, word addressed)
 	output      [18:0]  rom_addr,
 	input       [15:0]  rom_data,
+	// HW_ROMS: high when rom_data reflects rom_addr. The reference sim ties it
+	// high and the timing is unchanged; on the SDRAM path a miss withholds
+	// DTACK, which is the stall the M3 `romwait` gate measures.
+	input               rom_ready,
 
 	// MCU internal ROM load
-	input               mcu_rom_we,
-	input       [13:0]  mcu_rom_addr,
+	output      [13:0]  mcu_rom_addr,
 	input        [7:0]  mcu_rom_data,
+	input               mcu_rom_ready,
 
 	// board inputs
 	input        [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
@@ -101,7 +105,21 @@ module ms1_main (
 	output reg  [15:0]  slatch_data,
 
 	output reg  [31:0]  dbg_acc, dbg_vregw, dbg_vramw,
+	// ---- savestate snapshot bus (docs/m3-gate4.md has the image map).
+	// Only meaningful while every CPU is parked: ss_active hands the RAM
+	// ports to the engine.
+	input               ss_active,
+	input       [19:0]  ss_addr,
+	input               ss_wr,
+	input       [15:0]  ss_wdata,
+	output reg  [15:0]  ss_rdata,
+	input               ss_freeze,
+	input               ss_resume,
+	output              ss_m68k_parked,
+	output              ss_mcu_frozen,
+
 	output reg  [31:0]  dbg_irq2, dbg_int1e,
+	output reg  [31:0]  dbg_romwait, dbg_romacc,
 	output reg  [31:0]  dbg_mcuacc, dbg_mcubank
 );
 	// ------------------------------------------------------- 68000 clocking
@@ -111,6 +129,9 @@ module ms1_main (
 	reg enPhi1, enPhi2, phase;
 	always @(posedge clk) begin
 		if (reset) begin phdiv <= 3'd0; phase <= 1'b0; enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd4)) phdiv <= ss_wdata[2:0];
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd5)) phase <= ss_wdata[1];
+		else if (ss_active) begin enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else begin
 			enPhi1 <= 1'b0; enPhi2 <= 1'b0;
 			if (phdiv == phdiv_max) begin
@@ -180,6 +201,18 @@ module ms1_main (
 	// ROM word index: B's second bank continues the same region at +0x40000
 	assign rom_addr = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
 
+	// Hold the bus cycle until the program byte is actually there.
+	wire rom_stall = as_active & sel_rom & ~rom_ready;
+	always @(posedge clk) begin
+		if (reset) begin dbg_romwait <= 32'd0; dbg_romacc <= 32'd0; end
+		else begin
+			if (rom_stall)                     dbg_romwait <= dbg_romwait + 32'd1;
+			if (as_active & sel_rom & ~as_d_r) dbg_romacc  <= dbg_romacc  + 32'd1;
+		end
+	end
+	reg as_d_r;
+	always @(posedge clk) as_d_r <= as_active;
+
 	// ------------------------------------------------------------ memories
 	reg [15:0] wram [0:32767];
 	reg [15:0] pal  [0:1023];
@@ -202,13 +235,40 @@ module ms1_main (
 	                     : (~UDSn) ? {wdat[15:8], wdat[15:8]}
 	                               : {wdat[7:0],  wdat[7:0]};
 
+	// ---- savestate region decode. Word addresses in the image; every base
+	// is aligned to its own size so each select is a prefix compare.
+	wire ss_wram = ss_active & (ss_addr[19:15] == 5'h00);   // 0x00000 32768
+	wire ss_vr0  = ss_active & (ss_addr[19:13] == 7'h04);   // 0x08000  8192
+	wire ss_vr1  = ss_active & (ss_addr[19:13] == 7'h05);   // 0x0A000  8192
+	wire ss_vr2  = ss_active & (ss_addr[19:13] == 7'h06);   // 0x0C000  8192
+	wire ss_pal  = ss_active & (ss_addr[19:10] == 10'h38);  // 0x0E000  1024
+	wire ss_vreg = ss_active & (ss_addr[19:9]  == 11'h72);  // 0x0E400   512
+	wire ss_obj  = ss_active & (ss_addr[19:12] == 8'h0F);   // 0x0F000  4096
+	wire ss_ob1  = ss_active & (ss_addr[19:12] == 8'h18);   // 0x18000  4096
+	wire ss_ob2  = ss_active & (ss_addr[19:12] == 8'h19);
+	wire ss_sb1  = ss_active & (ss_addr[19:12] == 8'h1A);
+	wire ss_sb2  = ss_active & (ss_addr[19:12] == 8'h1B);
+	wire ss_misc = ss_active & (ss_addr[19:4] == 16'h1D00);  // 0x1D000 scalars
+	wire ss_mcu  = ss_active & (ss_addr[19:12] == 8'h1C);   // 0x1C000 the MCU
+	wire [15:0] ss_mcu_rdata;
+	wire ss_w    = ss_active & ss_wr;
+
 	reg [15:0] rdat;
 	always @(posedge clk) begin
 		dbg_ramw <= we & sel_ram;
 		dbg_ramw_data <= ram_wdat;
 		dbg_ramw_addr <= a;
 		dbg_ramw_data <= ram_wdat;
-		if (we) begin
+		if (ss_w) begin
+			// The engine owns the ports while it is streaming an image down.
+			if (ss_wram) wram[ss_addr[14:0]] <= ss_wdata;
+			if (ss_vr0)  vr0[ss_addr[12:0]]  <= ss_wdata;
+			if (ss_vr1)  vr1[ss_addr[12:0]]  <= ss_wdata;
+			if (ss_vr2)  vr2[ss_addr[12:0]]  <= ss_wdata;
+			if (ss_pal)  pal[ss_addr[9:0]]   <= ss_wdata;
+			if (ss_vreg) vreg[ss_addr[8:0]]  <= ss_wdata;
+			if (ss_obj)  obj[ss_addr[11:0]]  <= ss_wdata;
+		end else if (we) begin
 			if (sel_ram)  wram[wram_i] <= ram_wdat;
 			if (sel_pal)  pal[pal_i]   <= wdat;
 			if (sel_obj)  obj[obj_i]   <= wdat;
@@ -217,6 +277,47 @@ module ms1_main (
 			if (sel_v2)   vr2[v_i]     <= wdat;
 			if (sel_vreg) vreg[vreg_i] <= wdat;
 		end
+	end
+
+	// ---- the scalar state: everything that is neither a RAM nor inside a
+	// CPU. A savestate that restores every array and forgets these comes back
+	// with the right picture and the wrong interrupt timing.
+	reg [15:0] ss_misc_rdata;
+	always @* begin
+		case (ss_addr[3:0])
+			4'd0: ss_misc_rdata = {2'd0, bufi, buf_busy};
+			4'd1: ss_misc_rdata = {12'd0, irq1_h, irq2_h, irq4_h, iack_d};
+			4'd2: ss_misc_rdata = {13'd0, int1_dd, slatch_d, prot_we_pulse};
+			4'd3: ss_misc_rdata = {13'd0, mdiv};
+			4'd4: ss_misc_rdata = {13'd0, phdiv};
+			4'd5: ss_misc_rdata = {14'd0, phase, as_d};
+			default: ss_misc_rdata = 16'h0000;
+		endcase
+	end
+	// NOTE: every scalar above is restored INSIDE the block that owns it.
+	// A separate restore block would be a second driver, and the owning
+	// block wins on the next clock -- the restore then does nothing at all,
+	// silently. The image loopback is what exposed this: 4 words of this
+	// region did not read back what had just been written to them.
+
+	// ---- savestate readback, registered once here (the core registers it
+	// again, which is still inside the engine's RD_LAT).
+	always @(posedge clk) begin
+		if      (ss_wram) ss_rdata <= wram[ss_addr[14:0]];
+		else if (ss_vr0)  ss_rdata <= vr0[ss_addr[12:0]];
+		else if (ss_vr1)  ss_rdata <= vr1[ss_addr[12:0]];
+		else if (ss_vr2)  ss_rdata <= vr2[ss_addr[12:0]];
+		else if (ss_pal)  ss_rdata <= pal[ss_addr[9:0]];
+		else if (ss_vreg) ss_rdata <= vreg[ss_addr[8:0]];
+		else if (ss_obj)  ss_rdata <= obj[ss_addr[11:0]];
+		else if (ss_ob1)  ss_rdata <= obj_b1[ss_addr[11:0]];
+		else if (ss_ob2)  ss_rdata <= obj_b2[ss_addr[11:0]];
+		else if (ss_sb1)  ss_rdata <= spr_b1[ss_addr[11:0]];
+		else if (ss_sb2)  ss_rdata <= spr_b2[ss_addr[11:0]];
+		else if (ss_mcu)  ss_rdata <= ss_mcu_rdata;
+		else if (ss_park) ss_rdata <= ss_park_rdata;
+		else if (ss_misc) ss_rdata <= ss_misc_rdata;
+		else              ss_rdata <= 16'h0000;
 	end
 
 	// ---- video read ports.
@@ -242,7 +343,16 @@ module ms1_main (
 	reg        buf_busy;
 	always @(posedge clk) begin
 		if (reset) begin buf_busy <= 1'b0; bufi <= 13'd0; end
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd0)) begin
+			bufi <= ss_wdata[13:1]; buf_busy <= ss_wdata[0];
+		end
 		else if (vbl_rise) begin buf_busy <= 1'b1; bufi <= 13'd0; end
+		else if (ss_w & (ss_ob1 | ss_ob2 | ss_sb1 | ss_sb2)) begin
+			if (ss_ob1) obj_b1[ss_addr[11:0]] <= ss_wdata;
+			if (ss_ob2) obj_b2[ss_addr[11:0]] <= ss_wdata;
+			if (ss_sb1) spr_b1[ss_addr[11:0]] <= ss_wdata;
+			if (ss_sb2) spr_b2[ss_addr[11:0]] <= ss_wdata;
+		end
 		else if (buf_busy) begin
 			obj_b2[bufi[11:0]] <= obj_b1[bufi[11:0]];
 			obj_b1[bufi[11:0]] <= obj[bufi[11:0]];
@@ -278,7 +388,8 @@ module ms1_main (
 
 	wire [7:0] prot_rd;
 	always @* begin
-		if      (sel_rom)  rdat = rom_data;
+		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
+		else if (sel_rom)  rdat = rom_data;
 		else if (sel_ram)  rdat = wram[wram_i];
 		else if (sel_pal)  rdat = pal[pal_i];
 		else if (sel_obj)  rdat = obj[obj_i];
@@ -302,6 +413,8 @@ module ms1_main (
 	reg  [2:0] mdiv;
 	always @(posedge clk) begin
 		if (reset) mdiv <= 3'd0;
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd3)) mdiv <= ss_wdata[2:0];
+		else if (ss_active) mdiv <= mdiv;
 		else mdiv <= (mdiv == mdiv_max) ? 3'd0 : mdiv + 3'd1;
 	end
 	wire mcu_cen_tick = (mdiv == mdiv_max);
@@ -313,7 +426,9 @@ module ms1_main (
 	wire int1 = (vcount >= 9'd16) && (vcount < 9'd240);
 
 	reg prot_we_pulse;
-	always @(posedge clk) prot_we_pulse <= we & sel_prot;
+	always @(posedge clk)
+		if (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) prot_we_pulse <= ss_wdata[0];
+		else prot_we_pulse <= we & sel_prot;
 	wire prot_we_edge = (we & sel_prot) & ~prot_we_pulse;
 
 	ms1_iomcu u_mcu (
@@ -323,7 +438,10 @@ module ms1_main (
 		.int1(int1),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
 		.in_dsw2(in_dsw2), .in_system(in_system),
-		.rom_we(mcu_rom_we), .rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data),
+				.rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data), .rom_ready(mcu_rom_ready),
+		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
+		.ss_wdata(ss_wdata), .ss_rdata(ss_mcu_rdata),
+		.ss_freeze(ss_freeze), .ss_frozen(ss_mcu_frozen),
 		.dbg_addr(), .dbg_bank(mcu_dbg_bank), .dbg_rd(mcu_dbg_rd), .dbg_wr(), .dbg_din()
 	);
 
@@ -339,7 +457,7 @@ module ms1_main (
 	                       : (a >= 24'h044308 && a < 24'h04430A);
 	reg slatch_d;
 	always @(posedge clk) begin
-		slatch_d  <= we & sel_slatch;
+		slatch_d  <= (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) ? ss_wdata[1] : (we & sel_slatch);
 		slatch_we <= (we & sel_slatch) & ~slatch_d;
 		if ((we & sel_slatch) & ~slatch_d) slatch_data <= wdat;
 	end
@@ -358,6 +476,7 @@ module ms1_main (
 	reg int1_dd;
 	always @(posedge clk) begin
 		if (reset) begin dbg_irq2 <= 0; dbg_int1e <= 0; int1_dd <= 0; end
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) int1_dd <= ss_wdata[2];
 		else begin
 			if (mcu_irq2) dbg_irq2 <= dbg_irq2 + 1;
 			int1_dd <= int1;
@@ -366,10 +485,15 @@ module ms1_main (
 	end
 
 	reg iack_d;
-	always @(posedge clk) iack_d <= iack;
+	always @(posedge clk)
+		if (ss_w & ss_misc & (ss_addr[3:0] == 4'd1)) iack_d <= ss_wdata[0];
+		else iack_d <= iack;
 	wire iack_edge = iack & ~iack_d;
 	always @(posedge clk) begin
 		if (reset) begin irq1_h <= 1'b0; irq2_h <= 1'b0; irq4_h <= 1'b0; end
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd1)) begin
+			irq1_h <= ss_wdata[3]; irq2_h <= ss_wdata[2]; irq4_h <= ss_wdata[1];
+		end
 		else begin
 			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
 			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
@@ -381,7 +505,28 @@ module ms1_main (
 			end
 		end
 	end
-	wire [2:0] ipl = irq4_h ? 3'd4 : irq2_h ? 3'd2 : irq1_h ? 3'd1 : 3'd0;
+	// ---- savestate: park the 68000 at an instruction boundary.
+	// MON_BASE must be unmapped on every board this core serves. 0x0C0000 is
+	// free on System B (above rom1's 0x80000-0xBFFFF, below the protection
+	// port at 0xE0000) and on System C (below c_vreg at 0xC2000).
+	wire [2:0] ipl_park;
+	wire       sel_mon;
+	wire [15:0] mon_data;
+	ss_m68k_park #(.MON_BASE(15'h600)) u_park (
+		.clk(clk), .reset(reset), .phi(enPhi2),
+		.park_req(ss_freeze), .parked(ss_m68k_parked), .resume(ss_resume),
+		.eab(eab), .ASn(ASn), .eRWn(eRWn), .FC0(FC0), .FC1(FC1), .FC2(FC2),
+		.oEdb(oEdb),
+		.ipl_park(ipl_park), .sel_mon(sel_mon), .mon_data(mon_data),
+		.ss_sel(ss_addr[1:0]), .ss_wr(ss_w & ss_park), .ss_wdata(ss_wdata),
+		.ss_rdata(ss_park_rdata)
+	);
+	wire [15:0] ss_park_rdata;
+	wire        ss_park = ss_active & (ss_addr[19:4] == 16'h1D01);  // 0x1D010
+
+	wire [2:0] ipl_game = irq4_h ? 3'd4 : irq2_h ? 3'd2 : irq1_h ? 3'd1 : 3'd0;
+	// The park request is level 7 and outranks everything the board can raise.
+	wire [2:0] ipl = (ipl_park != 3'd0) ? ipl_park : ipl_game;
 
 	// -------------------------------------------------------- bus tracing
 	reg as_d;
@@ -417,7 +562,7 @@ module ms1_main (
 		// 68000 prefers it over VPA, which turns an AUTOVECTORED interrupt
 		// into a vectored one and fetches vector 0 off an undriven bus.
 		// MAME's set_input_line/HOLD_LINE is autovectored.
-		.DTACKn(~(as_active & ~iack)), .VPAn(~iack), .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
+		.DTACKn(~(as_active & ~iack & ~rom_stall)), .VPAn(~iack), .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
 		.IPL0n(~ipl[0]), .IPL1n(~ipl[1]), .IPL2n(~ipl[2]),
 		.iEdb(iEdb), .oEdb(oEdb), .eab(eab)
 	);

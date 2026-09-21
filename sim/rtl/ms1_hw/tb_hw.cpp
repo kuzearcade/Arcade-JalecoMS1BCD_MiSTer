@@ -42,7 +42,9 @@ int main(int argc, char **argv) {
 	const std::string stream = getenv("TB_STREAM") ? getenv("TB_STREAM") : "roms/avspirit_ioctl.bin";
 	const std::string promp  = getenv("TB_PROM")   ? getenv("TB_PROM")   : "roms/avspirit_prom.bin";
 	const std::string imgdir = getenv("TB_IMGDIR") ? getenv("TB_IMGDIR") : "/tmp/gen_avspirit";
-	const long step = envu("TB_STEP", 1);
+	const long step  = envu("TB_STEP", 1);
+	const long nfr   = envu("TB_FRAMES", 0);       // 0 = audit only
+	const char *fdir = getenv("TB_FRAMEDIR");
 	const long maxp = envu("TB_MAX", 8);
 
 	auto rom  = slurp(stream);
@@ -91,6 +93,70 @@ int main(int argc, char **argv) {
 	for (int i = 0; i < 100; i++) tick();
 	printf("download: %u bytes to SDRAM, %u to the PROM RAM (stream %zu, prom %zu)\n",
 	       top.dbg_dl_bytes, top.dbg_prom_bytes, rom.size(), prom.size());
+
+	// ---- frames: run the core on the SDRAM path and dump what it paints.
+	if (nfr) {
+		const int W = 256, H = 224;
+		top.in_p1 = 0xFF; top.in_p2 = 0xFF; top.in_system = 0xFF;
+		top.in_dsw1 = envu("TB_DSW1", 0xFF); top.in_dsw2 = envu("TB_DSW2", 0xFD);
+		std::vector<std::vector<uint32_t>> frames;
+		std::vector<uint32_t> cur(W * H, 0);
+		size_t px = 0;
+		uint64_t guard2 = 0;
+		while ((long)frames.size() < nfr && guard2++ < 400000000ULL) {
+			tick();
+			if (top.vblank_rise) {
+				if (getenv("TB_MISSLOG")) {
+					static unsigned pl0, pl1, pl2;
+					unsigned d0 = top.dbg_l0_miss - pl0, d1 = top.dbg_l1_miss - pl1,
+					         d2 = top.dbg_l2_miss - pl2;
+					if (d0 || d1 || d2)
+						printf("  frame %zu: misses L0 %u L1 %u L2 %u (first L2 miss at v=%u h=%u)\n",
+						       frames.size(), d0, d1, d2,
+						       top.dbg_l2_first_v, top.dbg_l2_first_h);
+					pl0 = top.dbg_l0_miss; pl1 = top.dbg_l1_miss; pl2 = top.dbg_l2_miss;
+				}
+				if (px) frames.push_back(cur);
+				std::fill(cur.begin(), cur.end(), 0);
+				px = 0;
+			}
+			// MS1-27: sample ONLY on the pixel enable.
+			if (top.ce_pix_o && top.rgb_valid && px < cur.size())
+				cur[px++] = top.rgb & 0xFFFFFF;
+		}
+		size_t nonblack = 0, lastnb = 0;
+		for (auto &f : frames) {
+			size_t c = 0; for (auto v : f) if (v) c++;
+			if (c) nonblack++;
+			lastnb = c;
+		}
+		printf("captured %zu frames, %zu of them non-blank (last has %zu lit pixels)\n",
+		       frames.size(), nonblack, lastnb);
+		if (fdir) {
+			char cmd[512]; snprintf(cmd, sizeof cmd, "mkdir -p %s", fdir);
+			if (system(cmd)) {}
+			for (size_t i = 0; i < frames.size(); i++) {
+				char path[512];
+				snprintf(path, sizeof path, "%s/f%zu.raw", fdir, i);
+				FILE *f = fopen(path, "wb");
+				if (f) { fwrite(frames[i].data(), 4, frames[i].size(), f); fclose(f); }
+			}
+			printf("dumped %zu frames to %s\n", frames.size(), fdir);
+		}
+		// The measurements M3's third gate asks for.
+		double pixd = top.dbg_pix ? (double)top.dbg_pix : 1.0;
+		printf("\nromwait  %u clocks over %u ROM accesses\n", top.dbg_romwait, top.dbg_romacc);
+		printf("tile-fetch misses: L0 %u  L1 %u  L2 %u  out of %u displayed pixels\n",
+		       top.dbg_l0_miss, top.dbg_l1_miss, top.dbg_l2_miss, top.dbg_pix);
+		printf("                  L0 %.5f%%  L1 %.5f%%  L2 %.5f%%\n",
+		       100.0 * top.dbg_l0_miss / pixd, 100.0 * top.dbg_l1_miss / pixd,
+		       100.0 * top.dbg_l2_miss / pixd);
+		printf("sprite pass: longest %u clocks (frame = 854016), late swaps %u\n",
+		       top.dbg_spr_pass_cycles, top.dbg_spr_late_swaps);
+		printf("sound writes: ym=%u oki1=%u oki2=%u\n",
+		       top.dbg_ym_writes, top.dbg_oki1_writes, top.dbg_oki2_writes);
+		return 0;
+	}
 
 	static const Region regs[] = {
 		{"maincpu",  0, "maincpu.bin",  true },

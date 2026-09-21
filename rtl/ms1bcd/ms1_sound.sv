@@ -40,6 +40,12 @@ module ms1_sound (
 	// (megasys1_v.cpp:253-267). Games use it between tunes, so without it the
 	// music never stops and never restarts. See MS1-30.
 	input               sreset,
+	// HW_ROMS: rom_ready is the program cache; the two OKI stalls come from
+	// their own caches and are ANDed into the chips' cen. jt6295 ignores
+	// rom_ok, so without that AND it plays whatever byte happens to be on the
+	// bus -- Sand Scorpion shipped 37.6 % stale sample bytes for a week.
+	input               rom_ready,
+	input               oki1_stall, oki2_stall,
 	input       [15:0]  latch_data,
 	output reg  [15:0]  latch_to_main,
 
@@ -54,6 +60,18 @@ module ms1_sound (
 	output signed [15:0] snd_l, snd_r,
 
 	// counters for M2 gate (3)
+	// ---- savestate snapshot bus
+	input               ss_active,
+	input       [19:0]  ss_addr,
+	input               ss_wr,
+	input       [15:0]  ss_wdata,
+	output reg  [15:0]  ss_rdata,
+	input               ss_freeze,
+	input               ss_resume,
+	output              ss_parked,
+	input               ss_replay,
+	output reg          ss_replay_done,
+
 	output reg  [31:0]  dbg_ym_writes, dbg_oki1_writes, dbg_oki2_writes,
 	output      [23:0]  dbg_addr,
 	output              dbg_acc, dbg_rw,
@@ -83,6 +101,7 @@ module ms1_sound (
 	always @(posedge clk) begin
 		enPhi1 <= 1'b0; enPhi2 <= 1'b0;
 		if (reset) begin cpu_acc <= 27'd0; cpu_ph <= 1'b0; end
+		else if (ss_active) begin enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else begin
 			// two edges per CPU cycle
 			if (cpu_acc >= 27'(CLK_SYS - 2 * CPU_HZ)) begin
@@ -100,7 +119,9 @@ module ms1_sound (
 	// notes the YM2151 clock is what decides the music tempo -- so it lands
 	// straight on the gate (3) write counts.
 	reg [1:0] ymdiv;
-	always @(posedge clk) if (reset) ymdiv <= 2'd0; else if (enPhi1) ymdiv <= ymdiv + 2'd1;
+	always @(posedge clk) if (reset) ymdiv <= 2'd0;
+		else if (ss_active) ymdiv <= ymdiv;
+		else if (enPhi1) ymdiv <= ymdiv + 2'd1;
 	wire ym_cen    = enPhi1 & (ymdiv[0] == 1'b1);
 	wire ym_cen_p1 = enPhi1 & (ymdiv    == 2'd3);
 
@@ -110,6 +131,7 @@ module ms1_sound (
 	always @(posedge clk) begin
 		oki_cen <= 1'b0;
 		if (reset) okidiv <= 4'd0;
+		else if (ss_active) okidiv <= okidiv;
 		else if (okidiv == 4'd11) begin okidiv <= 4'd0; oki_cen <= 1'b1; end
 		else okidiv <= okidiv + 4'd1;
 	end
@@ -131,6 +153,7 @@ module ms1_sound (
 	wire        we = as_active & ~eRWn;
 
 	wire sel_rom   = (a < 24'h020000);
+	wire srom_stall = as_active & sel_rom & ~rom_ready;
 	wire sel_latch = (a >= 24'h040000 && a < 24'h040002) ||
 	                 (a >= 24'h060000 && a < 24'h060002);
 	wire sel_ym    = (a >= 24'h080000 && a < 24'h080004);
@@ -142,7 +165,17 @@ module ms1_sound (
 
 	reg [15:0] sram [0:32767];
 	wire [14:0] ram_i = a[15:1];
-	always @(posedge clk) if (we && sel_ram) sram[ram_i] <= oEdb;
+
+	wire ss_sram  = ss_active & (ss_addr[19:15] == 5'h02);   // 0x10000 32768
+	wire ss_smisc = ss_active & (ss_addr[19:4]  == 16'h1D02); // 0x1D020
+	wire ss_spark = ss_active & (ss_addr[19:4]  == 16'h1D03); // 0x1D030
+	wire ss_ymsh  = ss_active & (ss_addr[19:8]  == 12'h1E0);  // 0x1E000 256
+	wire ss_w     = ss_active & ss_wr;
+
+	always @(posedge clk) begin
+		if (ss_w & ss_sram)       sram[ss_addr[14:0]] <= ss_wdata;
+		else if (we && sel_ram)   sram[ram_i] <= oEdb;
+	end
 
 	// ------------------------------------------------------------ latches
 	reg [15:0] latch_from_main;
@@ -207,9 +240,51 @@ module ms1_sound (
 		end
 	end
 
+	// ---- YM2151 register shadow. jt51 has no savestate of its own, so every
+	// register write is mirrored here and replayed into the chip on a load.
+	// This restores the chip's REGISTERS, not its envelope phase -- which is
+	// the usual savestate compromise and is invisible to this milestone's
+	// gate, which compares pixels.
+	reg [7:0] ymsh [0:255];
+	reg [7:0] ym_reg_sel;
+	wire ym_wr_pulse = acc_edge & ~eRWn & sel_ym;
+	always @(posedge clk) begin
+		if (ss_w & ss_ymsh) ymsh[ss_addr[7:0]] <= ss_wdata[7:0];
+		else if (ym_wr_pulse) begin
+			if (!chip_a0) ym_reg_sel <= chip_din;
+			else          ymsh[ym_reg_sel] <= chip_din;
+		end
+	end
+
+	// Replay: two chip writes per register -- select, then data -- one per
+	// cen_p1 so jt51 sees each exactly once, for all 256 registers.
+	reg [7:0] rp_idx;
+	reg       rp_phase, rp_run, rp_done;
+	always @(posedge clk) begin
+		if (reset) begin
+			rp_run <= 1'b0; rp_idx <= 8'd0; rp_phase <= 1'b0;
+			rp_done <= 1'b0; ss_replay_done <= 1'b0;
+		end else begin
+			if (!ss_replay) begin rp_done <= 1'b0; ss_replay_done <= 1'b0; end
+			else if (!rp_run && !rp_done) begin
+				rp_run <= 1'b1; rp_idx <= 8'd0; rp_phase <= 1'b0;
+			end
+			if (rp_run && ym_cen_p1) begin
+				if (!rp_phase) rp_phase <= 1'b1;
+				else begin
+					rp_phase <= 1'b0;
+					if (rp_idx == 8'd255) begin
+						rp_run <= 1'b0; rp_done <= 1'b1; ss_replay_done <= 1'b1;
+					end else rp_idx <= rp_idx + 8'd1;
+				end
+			end
+		end
+	end
+
 	jt51 u_ym (
 		.rst(snd_rst), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
-		.cs_n(1'b0), .wr_n(~ym_wr), .a0(chip_a0), .din(chip_din),
+		.cs_n(1'b0), .wr_n(~(ym_wr | rp_run)), .a0(rp_run ? rp_phase : chip_a0),
+		.din(rp_run ? (rp_phase ? ymsh[rp_idx] : rp_idx) : chip_din),
 		.dout(ym_dout), .ct1(), .ct2(), .irq_n(ym_irq_n),
 		.sample(), .left(), .right(),
 		.xleft(ym_l), .xright(ym_r)
@@ -219,13 +294,13 @@ module ms1_sound (
 	wire signed [13:0] oki1_snd, oki2_snd;
 
 	jt6295 #(.INTERPOL(0)) u_oki1 (
-		.rst(snd_rst), .clk(clk), .cen(oki_cen), .ss(1'b1),
+		.rst(snd_rst), .clk(clk), .cen(oki_cen & ~oki1_stall), .ss(1'b1),
 		.wrn(~oki1_wr), .din(chip_din), .dout(oki1_dout),
 		.rom_addr(oki1_rom_addr), .rom_data(oki1_rom_data), .rom_ok(1'b1),
 		.sound(oki1_snd), .sample()
 	);
 	jt6295 #(.INTERPOL(0)) u_oki2 (
-		.rst(snd_rst), .clk(clk), .cen(oki_cen), .ss(1'b1),
+		.rst(snd_rst), .clk(clk), .cen(oki_cen & ~oki2_stall), .ss(1'b1),
 		.wrn(~oki2_wr), .din(chip_din), .dout(oki2_dout),
 		.rom_addr(oki2_rom_addr), .rom_data(oki2_rom_data), .rom_ok(1'b1),
 		.sound(oki2_snd), .sample()
@@ -238,7 +313,8 @@ module ms1_sound (
 
 	// ------------------------------------------------------------- readback
 	always @* begin
-		if      (sel_rom)   iEdb = rom_data;
+		if      (sel_mon)   iEdb = mon_data;   // the park monitor's overlay
+		else if (sel_rom)   iEdb = rom_data;
 		else if (sel_ram)   iEdb = sram[ram_i];
 		else if (sel_latch) iEdb = latch_from_main;
 		else if (sel_ym)    iEdb = {8'h00, ym_dout};
@@ -246,6 +322,44 @@ module ms1_sound (
 		else if (sel_oki1)  iEdb = oki_status_real ? {8'h00, oki1_dout} : 16'h0000;
 		else if (sel_oki2)  iEdb = oki_status_real ? {8'h00, oki2_dout} : 16'h0000;
 		else                iEdb = 16'h0000;
+	end
+
+	// ---- savestate readback and scalar state
+	reg [15:0] ss_smisc_rdata;
+	always @* begin
+		case (ss_addr[3:0])
+			4'd0: ss_smisc_rdata = latch_from_main;
+			4'd1: ss_smisc_rdata = latch_to_main;
+			4'd2: ss_smisc_rdata = {13'd0, irq4_h, irq2_h, ym_irq_d};
+			4'd3: ss_smisc_rdata = {8'd0, chip_din};
+			4'd4: ss_smisc_rdata = {8'd0, ym_reg_sel};
+			4'd5: ss_smisc_rdata = {9'd0, chip_a0, ymdiv, okidiv};
+			4'd6: ss_smisc_rdata = cpu_acc[15:0];
+			4'd7: ss_smisc_rdata = {4'd0, cpu_ph, cpu_acc[26:16]};
+			default: ss_smisc_rdata = 16'h0000;
+		endcase
+	end
+	always @(posedge clk) if (ss_w & ss_smisc) begin
+		case (ss_addr[3:0])
+			4'd0: latch_from_main <= ss_wdata;
+			4'd1: latch_to_main   <= ss_wdata;
+			4'd2: begin irq4_h <= ss_wdata[2]; irq2_h <= ss_wdata[1];
+			            ym_irq_d <= ss_wdata[0]; end
+			4'd3: chip_din   <= ss_wdata[7:0];
+			4'd4: ym_reg_sel <= ss_wdata[7:0];
+			4'd5: begin chip_a0 <= ss_wdata[6]; ymdiv <= ss_wdata[5:4];
+			            okidiv <= ss_wdata[3:0]; end
+			4'd6: cpu_acc[15:0]  <= ss_wdata;
+			4'd7: begin cpu_ph <= ss_wdata[11]; cpu_acc[26:16] <= ss_wdata[10:0]; end
+			default: ;
+		endcase
+	end
+	always @(posedge clk) begin
+		if      (ss_sram)  ss_rdata <= sram[ss_addr[14:0]];
+		else if (ss_ymsh)  ss_rdata <= {8'd0, ymsh[ss_addr[7:0]]};
+		else if (ss_spark) ss_rdata <= ss_spark_rdata;
+		else if (ss_smisc) ss_rdata <= ss_smisc_rdata;
+		else               ss_rdata <= 16'h0000;
 	end
 
 	// ----------------------------------------------------------- interrupts
@@ -276,7 +390,23 @@ module ms1_sound (
 			end
 		end
 	end
-	wire [2:0] ipl = irq4_h ? 3'd4 : irq2_h ? 3'd2 : 3'd0;
+	// ---- savestate: park the sound 68000. 0x020000-0x03FFFF is unmapped in
+	// the sound map (ROM ends at 0x01FFFF, the latch starts at 0x040000).
+	wire  [2:0] ipl_park;
+	wire        sel_mon;
+	wire [15:0] mon_data, ss_spark_rdata;
+	ss_m68k_park #(.MON_BASE(15'h100)) u_spark (
+		.clk(clk), .reset(reset), .phi(enPhi2),
+		.park_req(ss_freeze), .parked(ss_parked), .resume(ss_resume),
+		.eab(eab), .ASn(ASn), .eRWn(eRWn), .FC0(FC0), .FC1(FC1), .FC2(FC2),
+		.oEdb(oEdb),
+		.ipl_park(ipl_park), .sel_mon(sel_mon), .mon_data(mon_data),
+		.ss_sel(ss_addr[1:0]), .ss_wr(ss_w & ss_spark), .ss_wdata(ss_wdata),
+		.ss_rdata(ss_spark_rdata)
+	);
+
+	wire [2:0] ipl_game = irq4_h ? 3'd4 : irq2_h ? 3'd2 : 3'd0;
+	wire [2:0] ipl = (ipl_park != 3'd0) ? ipl_park : ipl_game;
 
 	// ---------------------------------------------------------------- mix
 	// MAME: YM2151 routed at 0.80 to both channels, each OKI at 0.30.
@@ -299,7 +429,7 @@ module ms1_sound (
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),
 		.oRESETn(oRESETn), .oHALTEDn(oHALTEDn),
-		.DTACKn(~(as_active & ~iack)), .VPAn(~iack),
+		.DTACKn(~(as_active & ~iack & ~srom_stall)), .VPAn(~iack),
 		.BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
 		.IPL0n(~ipl[0]), .IPL1n(~ipl[1]), .IPL2n(~ipl[2]),
 		.iEdb(iEdb), .oEdb(oEdb), .eab(eab)

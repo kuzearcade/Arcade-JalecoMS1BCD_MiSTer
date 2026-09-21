@@ -31,7 +31,16 @@
 module ms1_video #(
 	parameter integer VIS_W = 256,
 	parameter integer VIS_H = 224,
-	parameter integer VIS_Y0 = 16      // first visible bitmap row
+	parameter integer VIS_Y0 = 16,     // first visible bitmap row
+	// Pixels of lookahead on the tile fetch. 0 is the reference sim and is
+	// bit-for-bit the original pipeline. On the SDRAM path the tile byte comes
+	// from a cache, and the raster cannot wait for a miss, so the sample point
+	// that drives the fetch runs LOOKAHEAD pixels ahead of the one being
+	// displayed and each layer's result is delayed by the same amount. Net
+	// latency is unchanged, which is what lets the two paths be compared
+	// pixel-for-pixel. 8 is one whole 4-byte ROM group -- 64 clocks of lead at
+	// 48 MHz, comfortably past a miss.
+	parameter integer LOOKAHEAD = 0
 ) (
 	input               clk,
 	input               ce,
@@ -58,6 +67,7 @@ module ms1_video #(
 	output      [12:0]  l0_vram_addr, l1_vram_addr, l2_vram_addr,
 	input       [15:0]  l0_vram_data, l1_vram_data, l2_vram_data,
 	output      [20:0]  l0_rom_addr,  l1_rom_addr,  l2_rom_addr,
+	output      [20:0]  l0_rom_use_addr, l1_rom_use_addr, l2_rom_use_addr,
 	input        [7:0]  l0_rom_data,  l1_rom_data,  l2_rom_data,
 
 	// sprite engine ports
@@ -67,6 +77,14 @@ module ms1_video #(
 	input       [15:0]  obj_data, spr_ram_data,
 	output      [21:0]  spr_rom_addr,
 	input        [7:0]  spr_rom_data,
+	input               spr_rom_ready,
+	input               ss_active,
+	input       [19:0]  ss_addr,
+	input               ss_wr,
+	input       [15:0]  ss_wdata,
+	output      [15:0]  ss_spr_rdata,
+	output      [31:0]  dbg_spr_pass_cycles,
+	output      [15:0]  dbg_spr_late_swaps,
 
 	// priority PROM and palette, both loaded from the .mra, never baked in
 	output       [8:0]  prom_addr,
@@ -79,32 +97,56 @@ module ms1_video #(
 );
 	// ---- flip: mirror the sample point over the visible window
 	wire flip = screen_flag[0];
+
+	// The lookahead is applied to the RASTER position, before the flip mirror,
+	// so the fetch order follows the scan whichever way the screen is turned.
+	wire [9:0] vx_sum = {1'b0, vx} + LOOKAHEAD[9:0];
+	wire       vx_wrap = vx_sum >= VIS_W[9:0];
+	wire [8:0] vxa = vx_wrap ? (vx_sum - VIS_W[9:0]) : vx_sum[8:0];
+	wire [8:0] vya = vx_wrap ? ((vy == VIS_H[8:0] - 9'd1) ? 9'd0 : vy + 9'd1) : vy;
+
+	// The DISPLAYED point: the sprite plane's readback still uses this, since
+	// its pixels were rendered in an earlier pass and need no lookahead.
 	wire [8:0] mx = flip ? (VIS_W[8:0] - 9'd1 - vx) : vx;
 	wire [8:0] my = flip ? (VIS_H[8:0] - 9'd1 - vy) : vy;
 	wire [8:0] bx = mx;                           // bitmap x
 	wire [8:0] by = my + VIS_Y0[8:0];             // bitmap y
 
+	// The FETCH point, LOOKAHEAD pixels ahead of it.
+	wire [8:0] mxa = flip ? (VIS_W[8:0] - 9'd1 - vxa) : vxa;
+	wire [8:0] mya = flip ? (VIS_H[8:0] - 9'd1 - vya) : vya;
+	wire [8:0] bxa = mxa;
+	wire [8:0] bya = mya + VIS_Y0[8:0];
+
 	// ---- three tilemap layers
 	wire [3:0] p0, p1, p2, c0, c1, c2;
 	wire       o0, o1, o2, v0;
 
-	ms1_tilemap u_l0 (.clk(clk), .ce(ce), .sx(bx), .sy(by),
+	ms1_tilemap #(.FETCH_LEAD(LOOKAHEAD)) u_l0 (.clk(clk), .ce(ce), .sx(bxa), .sy(bya),
 		.scroll_x(t0_sx), .scroll_y(t0_sy), .ctrl(t0_ctrl),
 		.vram_addr(l0_vram_addr), .vram_data(l0_vram_data),
-		.rom_addr(l0_rom_addr), .rom_data(l0_rom_data),
+		.rom_addr(l0_rom_addr), .rom_use_addr(l0_rom_use_addr), .rom_data(l0_rom_data),
 		.pen(p0), .color(c0), .opaque(o0), .pen_valid(v0));
 
-	ms1_tilemap u_l1 (.clk(clk), .ce(ce), .sx(bx), .sy(by),
+	ms1_tilemap #(.FETCH_LEAD(LOOKAHEAD)) u_l1 (.clk(clk), .ce(ce), .sx(bxa), .sy(bya),
 		.scroll_x(t1_sx), .scroll_y(t1_sy), .ctrl(t1_ctrl),
 		.vram_addr(l1_vram_addr), .vram_data(l1_vram_data),
-		.rom_addr(l1_rom_addr), .rom_data(l1_rom_data),
+		.rom_addr(l1_rom_addr), .rom_use_addr(l1_rom_use_addr), .rom_data(l1_rom_data),
 		.pen(p1), .color(c1), .opaque(o1), .pen_valid());
 
-	ms1_tilemap u_l2 (.clk(clk), .ce(ce), .sx(bx), .sy(by),
+	ms1_tilemap #(.FETCH_LEAD(LOOKAHEAD)) u_l2 (.clk(clk), .ce(ce), .sx(bxa), .sy(bya),
 		.scroll_x(t2_sx), .scroll_y(t2_sy), .ctrl(t2_ctrl),
 		.vram_addr(l2_vram_addr), .vram_data(l2_vram_data),
-		.rom_addr(l2_rom_addr), .rom_data(l2_rom_data),
+		.rom_addr(l2_rom_addr), .rom_use_addr(l2_rom_use_addr), .rom_data(l2_rom_data),
 		.pen(p2), .color(c2), .opaque(o2), .pen_valid());
+
+	// The tilemap's own latency grew by LOOKAHEAD and the sample point was
+	// advanced by the same amount, so the net timing is unchanged and no
+	// output delay belongs here -- adding one would shift the layers against
+	// the sprite plane by LOOKAHEAD pixels.
+	wire [3:0] p0q = p0, p1q = p1, p2q = p2;
+	wire [3:0] c0q = c0, c1q = c1, c2q = c2;
+	wire       o0q = o0, o1q = o1, o2q = o2;
 
 	// ---- sprite plane. Its readback is one cycle, the tilemaps are three,
 	// so the sprite pixel is delayed two stages to meet them.
@@ -115,7 +157,11 @@ module ms1_video #(
 		.obj_addr(obj_addr), .obj_data(obj_data),
 		.spr_addr(spr_ram_addr), .spr_data(spr_ram_data),
 		.rom_addr(spr_rom_addr), .rom_data(spr_rom_data),
-		.rd_ce(ce), .fb_rd_addr({by[7:0], bx[7:0]}), .fb_rd_data(fb_q));
+		.rom_ready(spr_rom_ready),
+		.dbg_pass_cycles(dbg_spr_pass_cycles), .dbg_late_swaps(dbg_spr_late_swaps),
+		.rd_ce(ce), .fb_rd_addr({by[7:0], bx[7:0]}), .fb_rd_data(fb_q),
+		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
+		.ss_wdata(ss_wdata), .ss_rdata(ss_spr_rdata));
 
 	reg [8:0] fb_d1, fb_d2;
 	always @(posedge clk) if (ce) begin fb_d1 <= fb_q; fb_d2 <= fb_d1; end
@@ -139,7 +185,7 @@ module ms1_video #(
 	wire [1:0] win;
 	ms1_prio u_prio (.clk(clk), .ce(ce),
 		.pri_code(active_layers[11:8]), .split(sprite_flag[8]),
-		.l0_opaque(o0 & e0), .l1_opaque(o1 & e1), .l2_opaque(o2 & e2),
+		.l0_opaque(o0q & e0), .l1_opaque(o1q & e1), .l2_opaque(o2q & e2),
 		.spr_present(spr_present), .spr_lowpri(spr_lowpri),
 		.prom_addr(prom_addr), .prom_data(prom_data), .win(win));
 
@@ -150,8 +196,8 @@ module ms1_video #(
 	// and emerging as rgb: tilemap pen (2), priority (3), palette+rgb (4).
 	reg [3:0] vpipe;
 	always @(posedge clk) if (ce) begin
-		p0d <= p0; p1d <= p1; p2d <= p2;
-		c0d <= c0; c1d <= c1; c2d <= c2;
+		p0d <= p0q; p1d <= p1q; p2d <= p2q;
+		c0d <= c0q; c1d <= c1q; c2d <= c2q;
 		fb_d3 <= fb_d2;
 		vpipe <= {vpipe[2:0], vvalid};
 	end

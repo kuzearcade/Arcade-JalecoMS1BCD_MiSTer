@@ -51,7 +51,10 @@ module ms1bcd_rom_hw (
 	output       [7:0]  mcu_rom_data,
 	output              mcu_rom_ready,
 
+	// Two addresses per layer: the live one says what to PREFETCH, the
+	// delayed one says what to READ for the pixel being drawn now.
 	input       [20:0]  l0_rom_addr, l1_rom_addr, l2_rom_addr,
+	input       [20:0]  l0_rom_use_addr, l1_rom_use_addr, l2_rom_use_addr,
 	output       [7:0]  l0_rom_data, l1_rom_data, l2_rom_data,
 	output              l0_ready, l1_ready, l2_ready,
 
@@ -169,6 +172,12 @@ module ms1bcd_rom_hw (
 	wire [23:0] a_l0   = audit_en ? audit_addr : {3'd0, l0_rom_addr};
 	wire [23:0] a_l1   = audit_en ? audit_addr : {3'd0, l1_rom_addr};
 	wire [23:0] a_l2   = audit_en ? audit_addr : {3'd0, l2_rom_addr};
+	// During the audit the two streams are the same address, so the entry is
+	// fetched and then hits -- which is what makes the audit exercise the very
+	// cache the raster uses rather than a second one built to be auditable.
+	wire [23:0] ua_l0  = audit_en ? audit_addr : {3'd0, l0_rom_use_addr};
+	wire [23:0] ua_l1  = audit_en ? audit_addr : {3'd0, l1_rom_use_addr};
+	wire [23:0] ua_l2  = audit_en ? audit_addr : {3'd0, l2_rom_use_addr};
 	wire [23:0] a_spr  = audit_en ? audit_addr : {2'd0, spr_rom_addr};
 	wire [23:0] a_oki1 = audit_en ? audit_addr : {6'd0, oki1_rom_addr};
 	wire [23:0] a_oki2 = audit_en ? audit_addr : {6'd0, oki2_rom_addr};
@@ -248,18 +257,22 @@ module ms1bcd_rom_hw (
 	wire        p1_req  [0:1];  wire p1_busy [0:1]; wire p1_valid [0:1];
 	wire [15:0] p1_dout [0:1];  wire [31:0] p1_pair [0:1];
 
-	rom_cache_n_byte #(.LINES(8), .PREFETCH(1)) u_l0 (
+	tile_prefetch_byte #(.TAG_W(19), .ENTRIES(16)) u_l0 (
 		.clk(clk), .reset(cache_reset),
-		.base_word(L0_BASE[23:1]), .byte_addr(a_l0),
-		.data(l0_rom_data), .word(), .ready(l0_ready),
+		.base_word(L0_BASE[23:1]),
+		.pf_tag(a_l0[20:2]), .pf_byte_addr(a_l0), .pf_vram(16'd0),
+		.use_tag(ua_l0[20:2]), .use_sel(ua_l0[1:0]),
+		.data(l0_rom_data), .vram(), .hit(l0_ready),
 		.sd_addr(p1_addr[0]), .sd_req(p1_req[0]),
 		.sd_busy(p1_busy[0]), .sd_valid(p1_valid[0]),
 		.sd_dout(p1_dout[0]), .sd_dout_pair(p1_pair[0])
 	);
-	rom_cache_n_byte #(.LINES(8), .PREFETCH(1)) u_l1 (
+	tile_prefetch_byte #(.TAG_W(19), .ENTRIES(16)) u_l1 (
 		.clk(clk), .reset(cache_reset),
-		.base_word(L1_BASE[23:1]), .byte_addr(a_l1),
-		.data(l1_rom_data), .word(), .ready(l1_ready),
+		.base_word(L1_BASE[23:1]),
+		.pf_tag(a_l1[20:2]), .pf_byte_addr(a_l1), .pf_vram(16'd0),
+		.use_tag(ua_l1[20:2]), .use_sel(ua_l1[1:0]),
+		.data(l1_rom_data), .vram(), .hit(l1_ready),
 		.sd_addr(p1_addr[1]), .sd_req(p1_req[1]),
 		.sd_busy(p1_busy[1]), .sd_valid(p1_valid[1]),
 		.sd_dout(p1_dout[1]), .sd_dout_pair(p1_pair[1])
@@ -283,10 +296,12 @@ module ms1bcd_rom_hw (
 	wire        p2_req  [0:1];  wire p2_busy [0:1]; wire p2_valid [0:1];
 	wire [15:0] p2_dout [0:1];  wire [31:0] p2_pair [0:1];
 
-	rom_cache_n_byte #(.LINES(8), .PREFETCH(1)) u_l2 (
+	tile_prefetch_byte #(.TAG_W(19), .ENTRIES(16)) u_l2 (
 		.clk(clk), .reset(cache_reset),
-		.base_word(L2_BASE[23:1]), .byte_addr(a_l2),
-		.data(l2_rom_data), .word(), .ready(l2_ready),
+		.base_word(L2_BASE[23:1]),
+		.pf_tag(a_l2[20:2]), .pf_byte_addr(a_l2), .pf_vram(16'd0),
+		.use_tag(ua_l2[20:2]), .use_sel(ua_l2[1:0]),
+		.data(l2_rom_data), .vram(), .hit(l2_ready),
 		.sd_addr(p2_addr[0]), .sd_req(p2_req[0]),
 		.sd_busy(p2_busy[0]), .sd_valid(p2_valid[0]),
 		.sd_dout(p2_dout[0]), .sd_dout_pair(p2_pair[0])
@@ -302,7 +317,18 @@ module ms1bcd_rom_hw (
 	assign p2_we[0] = 1'b0; assign p2_wrl[0] = 1'b0; assign p2_wrh[0] = 1'b0; assign p2_din[0] = 16'd0;
 	assign p2_we[1] = 1'b0; assign p2_wrl[1] = 1'b0; assign p2_wrh[1] = 1'b0; assign p2_din[1] = 16'd0;
 
-	sdram_arb #(.N(2)) u_arb2 (
+	// FIXED_PRIO: layer 2 is a raster that cannot wait; the sprite blit is an
+	// FSM that can, so the layer takes channel 0 and always wins.
+	//
+	// HONESTY NOTE: this was added to chase 21 apparent layer-2 misses a
+	// frame, and it did NOT fix them -- the output was byte-identical with and
+	// without it. Those misses turned out to be an artifact of a counter that
+	// was not gated to the visible window; every one of them was at v=255, in
+	// vertical blanking, painting nothing. Measured at LOOKAHEAD=8 the fetch
+	// misses zero times either way. The setting is kept because it is the
+	// right shape for the hardware (sdram_arb.sv documents this exact case),
+	// not because it was shown to fix anything.
+	sdram_arb #(.N(2), .FIXED_PRIO(1)) u_arb2 (
 		.clk(clk), .reset(cache_reset),
 		.i_addr(p2_addr), .i_we(p2_we), .i_wrl(p2_wrl), .i_wrh(p2_wrh),
 		.i_din(p2_din), .i_req(p2_req), .i_busy(p2_busy),

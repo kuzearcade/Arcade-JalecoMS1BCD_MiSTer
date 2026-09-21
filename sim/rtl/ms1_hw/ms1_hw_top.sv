@@ -29,8 +29,21 @@ module ms1_hw_top (
 	output [15:0] audit_data,
 	output        audit_ready,
 
+	// inputs + video, for the frames gate
+	input  [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
+	output [23:0] rgb,
+	output        rgb_valid,
+	output        ce_pix_o,
+	output        vblank_rise,
+
 	output        sdram_ready,
-	output [31:0] dbg_dl_bytes, dbg_prom_bytes
+	output [31:0] dbg_dl_bytes, dbg_prom_bytes,
+	output [31:0] dbg_romwait, dbg_romacc,
+	output [31:0] dbg_l0_miss, dbg_l1_miss, dbg_l2_miss, dbg_pix,
+	output [31:0] dbg_ym_writes, dbg_oki1_writes, dbg_oki2_writes,
+	output [15:0] dbg_l2_first_v, dbg_l2_first_h,
+	output [31:0] dbg_spr_pass_cycles,
+	output [15:0] dbg_spr_late_swaps
 );
 	wire [15:0] SDRAM_DQ;
 	wire [12:0] SDRAM_A;
@@ -72,26 +85,79 @@ module ms1_hw_top (
 		.SDRAM_nWE(SDRAM_nWE), .SDRAM_CKE(SDRAM_CKE)
 	);
 
+	wire [18:0] c_rom_addr;  wire [15:0] c_rom_data;  wire c_rom_ready;
+	wire [16:0] c_srom_addr; wire [15:0] c_srom_data; wire c_srom_ready;
+	wire [13:0] c_mcu_addr;  wire  [7:0] c_mcu_data;  wire c_mcu_ready;
+	wire [20:0] c_l0_addr, c_l1_addr, c_l2_addr;
+	wire [20:0] c_l0_use, c_l1_use, c_l2_use;
+	wire  [7:0] c_l0_data, c_l1_data, c_l2_data;
+	wire        c_l0_ready, c_l1_ready, c_l2_ready;
+	wire [21:0] c_spr_addr; wire [7:0] c_spr_data; wire c_spr_ready;
+	wire [17:0] c_oki1_addr, c_oki2_addr;
+	wire  [7:0] c_oki1_data, c_oki2_data;
+	wire        c_oki1_stall, c_oki2_stall;
+	wire  [8:0] c_prom_addr; wire [7:0] c_prom_data;
+
+	// The core is held in reset for the whole transfer and until the
+	// controller reports ready, so no cache is ever asked for a byte that is
+	// not there yet -- and, just as importantly, no cache is left holding
+	// something it fetched before the download wrote it.
+	wire core_reset = reset | ioctl_download | ~sdram_ready | audit_en;
+
+	ms1bcd_core #(.LOOKAHEAD(8)) u_core (
+		.clk(clk_sys), .reset(core_reset), .mode(mode),
+		.rom_addr(c_rom_addr), .rom_data(c_rom_data), .rom_ready(c_rom_ready),
+		.mcu_rom_addr(c_mcu_addr), .mcu_rom_data(c_mcu_data),
+		.mcu_rom_ready(c_mcu_ready),
+		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1), .in_dsw2(in_dsw2),
+		.in_system(in_system),
+		.l0_rom_addr(c_l0_addr), .l1_rom_addr(c_l1_addr), .l2_rom_addr(c_l2_addr),
+		.l0_rom_use_addr(c_l0_use), .l1_rom_use_addr(c_l1_use),
+		.l2_rom_use_addr(c_l2_use),
+		.l0_rom_data(c_l0_data), .l1_rom_data(c_l1_data), .l2_rom_data(c_l2_data),
+		.l0_rom_ready(c_l0_ready), .l1_rom_ready(c_l1_ready), .l2_rom_ready(c_l2_ready),
+		.spr_rom_addr(c_spr_addr), .spr_rom_data(c_spr_data),
+		.spr_rom_ready(c_spr_ready),
+		.prom_addr(c_prom_addr), .prom_data(c_prom_data),
+		.srom_addr(c_srom_addr), .srom_data(c_srom_data), .srom_ready(c_srom_ready),
+		.oki1_rom_addr(c_oki1_addr), .oki2_rom_addr(c_oki2_addr),
+		.oki1_rom_data(c_oki1_data), .oki2_rom_data(c_oki2_data),
+		.oki1_stall(c_oki1_stall), .oki2_stall(c_oki2_stall),
+		.oki_status_real(1'b0),
+		.snd_l(), .snd_r(),
+		.dbg_ym_writes(dbg_ym_writes), .dbg_oki1_writes(dbg_oki1_writes),
+		.dbg_oki2_writes(dbg_oki2_writes),
+		.dbg_fm_l(), .dbg_fm_r(), .dbg_oki1(), .dbg_oki2(),
+		.rgb(rgb), .rgb_valid(rgb_valid), .vblank_rise(vblank_rise),
+		.vcount_o(), .hcount_o(), .ce_pix_o(ce_pix_o),
+		.dbg_romwait(dbg_romwait), .dbg_romacc(dbg_romacc),
+		.dbg_l0_miss(dbg_l0_miss), .dbg_l1_miss(dbg_l1_miss),
+		.dbg_l2_miss(dbg_l2_miss), .dbg_pix(dbg_pix),
+		.dbg_l2_first_v(dbg_l2_first_v), .dbg_l2_first_h(dbg_l2_first_h),
+		.dbg_spr_pass_cycles(dbg_spr_pass_cycles),
+		.dbg_spr_late_swaps(dbg_spr_late_swaps)
+	);
+
 	ms1bcd_rom_hw u_rom (
 		.clk(clk_sys), .reset(reset), .pwr_reset(reset), .mode(mode),
 		.ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
 		.ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
 		.ioctl_wait(ioctl_wait),
 
-		// The core is not instantiated in this build: the audit drives every
-		// cache directly, which is what isolates "the bytes reached SDRAM and
-		// come back correctly" from anything the core does with them.
-		.rom_addr(19'd0),  .rom_data(),  .rom_ready(),
-		.srom_addr(17'd0), .srom_data(), .srom_ready(),
-		.mcu_rom_addr(14'd0), .mcu_rom_data(), .mcu_rom_ready(),
-		.l0_rom_addr(21'd0), .l1_rom_addr(21'd0), .l2_rom_addr(21'd0),
-		.l0_rom_data(), .l1_rom_data(), .l2_rom_data(),
-		.l0_ready(), .l1_ready(), .l2_ready(),
-		.spr_rom_addr(22'd0), .spr_rom_data(), .spr_ready(),
-		.oki1_rom_addr(18'd0), .oki2_rom_addr(18'd0),
-		.oki1_rom_data(), .oki2_rom_data(),
-		.oki1_stall(), .oki2_stall(),
-		.prom_addr(audit_addr[8:0]), .prom_data(),
+		.rom_addr(c_rom_addr),   .rom_data(c_rom_data),   .rom_ready(c_rom_ready),
+		.srom_addr(c_srom_addr), .srom_data(c_srom_data), .srom_ready(c_srom_ready),
+		.mcu_rom_addr(c_mcu_addr), .mcu_rom_data(c_mcu_data),
+		.mcu_rom_ready(c_mcu_ready),
+		.l0_rom_addr(c_l0_addr), .l1_rom_addr(c_l1_addr), .l2_rom_addr(c_l2_addr),
+		.l0_rom_use_addr(c_l0_use), .l1_rom_use_addr(c_l1_use),
+		.l2_rom_use_addr(c_l2_use),
+		.l0_rom_data(c_l0_data), .l1_rom_data(c_l1_data), .l2_rom_data(c_l2_data),
+		.l0_ready(c_l0_ready), .l1_ready(c_l1_ready), .l2_ready(c_l2_ready),
+		.spr_rom_addr(c_spr_addr), .spr_rom_data(c_spr_data), .spr_ready(c_spr_ready),
+		.oki1_rom_addr(c_oki1_addr), .oki2_rom_addr(c_oki2_addr),
+		.oki1_rom_data(c_oki1_data), .oki2_rom_data(c_oki2_data),
+		.oki1_stall(c_oki1_stall), .oki2_stall(c_oki2_stall),
+		.prom_addr(audit_en ? audit_addr[8:0] : c_prom_addr), .prom_data(c_prom_data),
 
 		.audit_en(audit_en), .audit_sel(audit_sel), .audit_addr(audit_addr),
 		.audit_data(audit_data), .audit_ready(audit_ready),

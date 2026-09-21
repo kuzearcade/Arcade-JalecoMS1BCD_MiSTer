@@ -42,6 +42,12 @@ module ms1_sprites (
 
 	input               start,          // one pulse begins a pass
 	output reg          busy,
+	// M3 gate: the pass must finish inside one frame. dbg_pass_cycles is the
+	// LONGEST pass seen; dbg_late_swaps counts the times a new pass was asked
+	// for while the previous one was still running, which on the board is a
+	// half-drawn sprite plane reaching the screen.
+	output reg  [31:0]  dbg_pass_cycles,
+	output reg  [15:0]  dbg_late_swaps,
 
 	input       [15:0]  sprite_flag,
 	input       [15:0]  sprite_bank,
@@ -54,6 +60,11 @@ module ms1_sprites (
 
 	output reg  [21:0]  rom_addr,       // sprite ROM, 128 bytes per 16x16 tile
 	input        [7:0]  rom_data,
+	// HW_ROMS: high when rom_data reflects rom_addr. The blit is an FSM, not a
+	// raster, so it can simply wait -- which makes the sprite plane exact on
+	// the SDRAM path rather than merely usually right. The reference sim ties
+	// this high and the pass runs at its original two clocks per pixel.
+	input               rom_ready,
 
 	// Display readback. rd_ce must be the PIXEL enable, not the system
 	// clock: the consumer's pipeline advances one stage per pixel, and a
@@ -62,10 +73,28 @@ module ms1_sprites (
 	// high (as in sim/rtl/video_state) and wrong as soon as it is not.
 	input               rd_ce,
 	input       [15:0]  fb_rd_addr,     // {y[7:0], x[7:0]}
-	output reg   [8:0]  fb_rd_data      // {pri, colour[3:0], pen[3:0]}
+	output reg   [8:0]  fb_rd_data,     // {pri, colour[3:0], pen[3:0]}
+
+	// ---- savestate. The plane is not regenerated from scratch every frame:
+	// sprite_flag bit 4 keeps the previous one (the P47 trails effect), so it
+	// is real state and has to travel in the image.
+	input               ss_active,
+	input       [19:0]  ss_addr,
+	input               ss_wr,
+	input       [15:0]  ss_wdata,
+	output reg  [15:0]  ss_rdata
 );
 	// ---------------------------------------------------------------- plane
 	reg [8:0]  plane [0:65535];
+	wire ss_plane = ss_active & (ss_addr[19:16] == 4'h2);    // 0x20000 65536
+	// The blit engine's own state. The plane alone is not enough: a save can
+	// land mid-pass, and even between passes the engine carries the object
+	// index, the bank and the latched sprite attributes that decide what the
+	// NEXT pass draws. Without these the restored core drew the previous
+	// scene correctly and the next one wrongly, which is exactly how the
+	// round trip failed -- exact for three frames, then 25 pixels out for
+	// every frame after new content appeared.
+	wire ss_fsm = ss_active & (ss_addr[19:5] == 15'h0E83);   // 0x1D060 32
 	reg [15:0] eng_addr;
 	wire [8:0] eng_q = plane[eng_addr];      // port A read
 	reg [15:0] fb_wr_addr;
@@ -73,11 +102,27 @@ module ms1_sprites (
 	reg        fb_we;
 
 	always @(posedge clk) begin
-		if (fb_we) plane[fb_wr_addr] <= fb_wr_data;
+		if (ss_plane & ss_wr) plane[ss_addr[15:0]] <= ss_wdata[8:0];
+		else if (fb_we)       plane[fb_wr_addr] <= fb_wr_data;
 		if (rd_ce) fb_rd_data <= plane[fb_rd_addr];   // port B read
+		ss_rdata <= ss_fsm ? ss_fsm_rdata : {7'd0, plane[ss_addr[15:0]]};
 	end
 
 	// ------------------------------------------------------------- sequencer
+	reg [31:0] pass_len;
+	always @(posedge clk) begin
+		if (reset) begin
+			pass_len <= 32'd0; dbg_pass_cycles <= 32'd0; dbg_late_swaps <= 16'd0;
+		end else if (!busy) begin
+			pass_len <= 32'd0;
+		end else begin
+			pass_len <= pass_len + 32'd1;
+			if (pass_len + 32'd1 > dbg_pass_cycles) dbg_pass_cycles <= pass_len + 32'd1;
+			// start while still busy: the previous pass did not finish in time
+			if (start) dbg_late_swaps <= dbg_late_swaps + 16'd1;
+		end
+	end
+
 	localparam [4:0] S_IDLE = 5'd0,  S_CLEAR = 5'd1,
 	                 S_O0   = 5'd2,  S_O1  = 5'd3,  S_O2 = 5'd4,  S_O3 = 5'd5,
 	                 S_O4   = 5'd6,
@@ -100,6 +145,43 @@ module ms1_sprites (
 	reg        mossol;
 	reg [12:0] tile;
 	reg  [3:0] bx, by;
+
+	// ---- savestate: the blit engine's state, one field per word.
+	reg [15:0] ss_fsm_rdata;
+	always @* begin
+		case (ss_addr[4:0])
+			5'd0:  ss_fsm_rdata = {11'd0, st};
+			5'd1:  ss_fsm_rdata = eng_addr;
+			5'd2:  ss_fsm_rdata = fb_wr_addr;
+			5'd3:  ss_fsm_rdata = {7'd0, fb_wr_data};
+			5'd4:  ss_fsm_rdata = clr[15:0];
+			5'd5:  ss_fsm_rdata = {15'd0, clr[16]};
+			5'd6:  ss_fsm_rdata = {8'd0, offs};
+			5'd7:  ss_fsm_rdata = {14'd0, bank};
+			5'd8:  ss_fsm_rdata = {4'd0, sbase};
+			5'd9:  ss_fsm_rdata = o_idx;
+			5'd10: ss_fsm_rdata = o_dx;
+			5'd11: ss_fsm_rdata = o_dy;
+			5'd12: ss_fsm_rdata = o_dn;
+			5'd13: ss_fsm_rdata = s_attr;
+			5'd14: ss_fsm_rdata = s_x;
+			5'd15: ss_fsm_rdata = s_y;
+			5'd16: ss_fsm_rdata = s_code;
+			5'd17: ss_fsm_rdata = {5'd0, sx[10:0]};
+			5'd18: ss_fsm_rdata = {5'd0, sy[10:0]};
+			5'd19: ss_fsm_rdata = {12'd0, scol};
+			5'd20: ss_fsm_rdata = {12'd0, mosaic};
+			5'd21: ss_fsm_rdata = {3'd0, tile};
+			5'd22: ss_fsm_rdata = {8'd0, by, bx};
+			5'd23: ss_fsm_rdata = {10'd0, mossol, spri, sflipy, sflipx, fb_we, busy};
+			5'd24: ss_fsm_rdata = rom_addr[15:0];
+			5'd25: ss_fsm_rdata = {10'd0, rom_addr[21:16]};
+			5'd26: ss_fsm_rdata = {4'd0, obj_addr};
+			5'd27: ss_fsm_rdata = {4'd0, spr_addr};
+			5'd28: ss_fsm_rdata = {7'd0, fb_rd_data};
+			default: ss_fsm_rdata = 16'h0000;
+		endcase
+	end
 
 	wire       split_on   = sprite_flag[8];
 	wire [3:0] color_mask = split_on ? 4'h7 : 4'hF;
@@ -136,6 +218,47 @@ module ms1_sprites (
 
 		if (reset) begin
 			st <= S_IDLE; busy <= 1'b0;
+		end else if (ss_fsm & ss_wr) begin
+			// The restore lives inside THIS block, not one of its own: two
+			// always blocks driving `st` is a multiple driver, which Verilator
+			// resolves by block order and Quartus rejects outright.
+			case (ss_addr[4:0])
+				5'd0:  st         <= ss_wdata[4:0];
+				5'd1:  eng_addr   <= ss_wdata;
+				5'd2:  fb_wr_addr <= ss_wdata;
+				5'd3:  fb_wr_data <= ss_wdata[8:0];
+				5'd4:  clr[15:0]  <= ss_wdata;
+				5'd5:  clr[16]    <= ss_wdata[0];
+				5'd6:  offs       <= ss_wdata[7:0];
+				5'd7:  bank       <= ss_wdata[1:0];
+				5'd8:  sbase      <= ss_wdata[11:0];
+				5'd9:  o_idx      <= ss_wdata;
+				5'd10: o_dx       <= ss_wdata;
+				5'd11: o_dy       <= ss_wdata;
+				5'd12: o_dn       <= ss_wdata;
+				5'd13: s_attr     <= ss_wdata;
+				5'd14: s_x        <= ss_wdata;
+				5'd15: s_y        <= ss_wdata;
+				5'd16: s_code     <= ss_wdata;
+				5'd17: sx         <= $signed(ss_wdata[10:0]);
+				5'd18: sy         <= $signed(ss_wdata[10:0]);
+				5'd19: scol       <= ss_wdata[3:0];
+				5'd20: mosaic     <= ss_wdata[3:0];
+				5'd21: tile       <= ss_wdata[12:0];
+				5'd22: begin bx <= ss_wdata[3:0]; by <= ss_wdata[7:4]; end
+				5'd23: begin busy <= ss_wdata[0]; fb_we <= ss_wdata[1];
+				             sflipx <= ss_wdata[2]; sflipy <= ss_wdata[3];
+				             spri <= ss_wdata[4]; mossol <= ss_wdata[5]; end
+				5'd24: rom_addr[15:0]  <= ss_wdata;
+				5'd25: rom_addr[21:16] <= ss_wdata[5:0];
+				5'd26: obj_addr   <= ss_wdata[11:0];
+				5'd27: spr_addr   <= ss_wdata[11:0];
+				// 5'd28 (fb_rd_data) is deliberately NOT restored: it is a
+				// one-pixel readback register, rewritten every pixel, and it
+				// is driven by the plane block -- assigning it here too would
+				// be a second driver on the same register.
+				default: ;
+			endcase
 		end else case (st)
 		S_IDLE: if (start) begin
 			busy <= 1'b1;
@@ -209,7 +332,11 @@ module ms1_sprites (
 			eng_addr <= cur_fb;
 			st <= S_BB;
 		end
-		S_BB: begin
+		S_BB: if (!rom_ready) begin
+			// Hold here until the byte is valid. Everything below reads `pix`,
+			// which is a nibble of rom_data.
+			st <= S_BB;
+		end else begin
 			// FIRST WRITER WINS: only an empty plane pixel (pen 15) is taken.
 			if (on_screen && pix != 4'hF && eng_q[3:0] == 4'hF) begin
 				fb_wr_addr <= cur_fb;

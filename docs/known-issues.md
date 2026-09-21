@@ -4,8 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Three are open**: two recorded during M0 and answerable off-board, and
-MS1-31, which needs the board.
+**Five are open**: two recorded during M0 and answerable off-board, MS1-31,
+which needs the board, and MS1-32 / MS1-33 from M3.
 
 | | | |
 |---|---|---|
@@ -40,6 +40,10 @@ MS1-31, which needs the board.
 | MS1-29 | jt51 samples `write` on `cen`, so a one-clock strobe never raises `busy` | closed |
 | MS1-30 | `screen_flag` bit 4 is a reset line over the whole sound subsystem | closed |
 | MS1-31 | Matching MAME's OKI status means matching a hack MAME admits to | **OPEN** — only real hardware can settle it |
+| MS1-32 | A tile-fetch lookahead trades fidelity for cache tolerance | **OPEN** — needs prediction-based prefetch, not a bigger lead |
+| MS1-33 | A savestate round trip leaves one counter digit behind | **OPEN** — bounded at 25 pixels, cause not yet named |
+| MS1-34 | A restore written in its own always block does nothing, silently | closed |
+| MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
 
 ---
 
@@ -844,3 +848,116 @@ difference is confined to this one bit.
 The related question — whether jt6295's sample timing is close enough that a
 real status would work where MAME's does not — is answerable the same way and
 at the same time.
+
+
+## MS1-32 — A tile-fetch lookahead trades fidelity for cache tolerance (open)
+
+On the SDRAM path a tile byte comes from a cache, and the raster cannot wait
+for a miss. The first attempt gave the fetch a head start by advancing the
+video sample point by N pixels and growing the tilemap's latency by the same
+amount, so net timing was unchanged. Misses went to zero. Frames did not match
+the reference sim.
+
+Every differing pixel was in the first N columns. At N=16 the diffs spanned
+x = 0..15; at N=8, exactly x = 0..7. The extent tracks the parameter one for
+one, which is the whole diagnosis:
+
+`ms1_tilemap` reads `scroll_x`/`scroll_y`/`ctrl` combinationally at stage 0.
+Advancing the sample point means the fetch for a line's first N pixels happens
+while the PREVIOUS line is still on screen. avspirit writes scroll registers
+during horizontal blanking on specific scanline bands (rows 85-91 and 113-127
+in the frame measured), and the two paths then sample those registers on
+opposite sides of the write.
+
+So the lookahead is not a tuning knob with a safe value. Any N > 0 has the
+same defect, N columns wide. The reference path (N=0) is the faithful one and
+is what matches MAME 150/151.
+
+**The fix is not a bigger lead.** `tile_prefetch_byte` has two address streams
+for exactly this reason: the PREFETCH stream may be a predicted address, while
+the USE stream stays on the true, unshifted sample point. A misprediction then
+costs a miss, not a wrong pixel. The error here was driving the prefetch stream
+from a time-shifted sample point, which moves the pen path with it. Doing it
+properly means giving `ms1_tilemap` a second, prefetch-only address generator
+running ahead of the pen pipeline rather than instead of it.
+
+Measured at N=8: zero fetch misses across 3.44 M displayed pixels, 58 of 60
+frames identical to the reference, the 2 that differ being 98 pixels each and
+all at x < 8.
+
+## MS1-33 — A savestate round trip leaves one counter digit behind (open)
+
+Save the core at a frame boundary, run 8 frames, restore, run the same 8
+frames, compare. Frames 0, 1 and 2 are pixel-identical. Frame 3 differs in 497
+of 4741 lit pixels, and frames 4-7 in 25 each, always the same 14x7 glyph at
+x 153-166, y 201-207.
+
+What is established:
+
+- **The image is not the problem.** A loopback -- park, stream out, stream the
+  same image back in without letting the core run, stream out again -- reports
+  **0 of 196608 words** different. Every region reads back exactly what was
+  written.
+- **State is identical for three frames.** A non-invasive probe, reading the
+  arrays straight out of the model with no parking, reports game state
+  bit-identical at K=1 and K=3.
+- **The divergence is one character cell.** At K=5, `vram2` differs in 2 words,
+  the first being tile code `F034` against `F030` -- one glyph, four apart. A
+  counter is showing a different digit. `wram` differs in 98 words from
+  0x07F76, which is stack.
+
+What has been tried and did NOT change the result, byte for byte:
+
+| attempt | effect |
+|---|---|
+| Capturing the sprite blit FSM (29 fields) | none |
+| Capturing `mcu_data`, the protection answer | none |
+| Restoring `iack_d`, `slatch_d`, `prot_we_pulse` | none |
+
+Each of those was a real gap and each fix is kept on its own merits; none is
+the cause. Note the sound side is ruled out by construction: `latch_to_main`
+is unconnected in `ms1bcd_core`, so the YM2151's unrestorable internal phase
+has no path to the video.
+
+The next step is to peek at K=4 to pin the divergence to a single frame, and to
+add the sprite plane and the four object/sprite buffers to the non-invasive
+probe -- they are in the image and restored, but they are not yet in the list
+the probe compares, so a difference there would currently be invisible.
+
+## MS1-34 — A restore written in its own always block does nothing, silently (closed)
+
+Four times in M3 a savestate restore was written as a separate
+`always @(posedge clk)` block from the logic owning the register: the raster
+counters, `pass_len`, `fb_rd_data`, and every scalar in `ms1_main`'s and
+`ms1_iomcu`'s misc regions. The owning block wins on the next clock, so the
+restore executes and is immediately overwritten.
+
+**Verilator does not warn.** It stayed completely silent on `fb_rd_data` being
+driven from two clocked blocks. Lint is not a guard for this; only structural
+care is. Every restore in this core now lives inside the block that owns its
+register, as the highest-priority branch after reset.
+
+Two things made this expensive to find. The restores were invisible in
+simulation -- the core simply behaved as though the state had not been
+restored, which looks exactly like missing state. And the registers concerned
+also free-run, so the image loopback could not see the bug either: they would
+differ on read-back whether or not the restore worked. Fixing the block
+placement changed no measurement at all until the free-running fix landed too.
+
+## MS1-35 — A probe that parks the CPU to look at it measures itself (closed)
+
+The first state-divergence probe parked both runs to stream an image out and
+compare. It reported divergence after a single frame: 69 words, in stack tops,
+park registers and the 68000 clock phase.
+
+All of it was the probe's own doing. Parking raises a level-7 interrupt and
+runs a monitor that pushes D0-D7/A0-A6 onto the GAME's stack, and it takes a
+variable number of cycles to get there, so two runs that park at slightly
+different instants show different stack tops regardless of whether anything
+diverged.
+
+Reading the arrays directly out of the model instead -- no parking, no monitor,
+no pushes -- reports game state **bit-identical** at the same points. The
+lesson is narrow and worth keeping: a savestate probe must not use the
+savestate mechanism to observe, because that mechanism perturbs the two things
+a savestate is most likely to get wrong, the stack and the clock phase.

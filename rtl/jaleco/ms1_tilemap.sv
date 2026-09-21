@@ -25,7 +25,16 @@
 // `pen_valid` follows the same three stages so the consumer never has to
 // count clocks itself.
 
-module ms1_tilemap (
+module ms1_tilemap #(
+	// Extra pixels between issuing the ROM address and consuming the byte.
+	// 0 is the original pipeline and the reference sim. On the SDRAM path the
+	// byte comes from a cache and one pixel (8 clocks at 48 MHz) is not enough
+	// for a miss, so the address is issued FETCH_LEAD pixels earlier and
+	// everything that travels with it is delayed to match. Simply moving the
+	// sample point does NOT help: it shifts the whole pipeline, address and
+	// use together, and the cache still gets one pixel.
+	parameter integer FETCH_LEAD = 0
+) (
 	input               clk,
 	input               ce,            // one tick per pixel
 
@@ -43,7 +52,8 @@ module ms1_tilemap (
 	input       [15:0]  vram_data,
 
 	// tile ROM: byte addressed, 32 bytes per 8x8 tile
-	output reg  [20:0]  rom_addr,
+	output reg  [20:0]  rom_addr,      // live: what to PREFETCH
+	output      [20:0]  rom_use_addr,  // delayed: what to READ this pixel
 	input        [7:0]  rom_data,
 
 	output reg   [3:0]  pen,
@@ -147,11 +157,37 @@ module ms1_tilemap (
 		v1 <= v0;
 	end
 
+	// ---- the FETCH_LEAD gap: hold everything that travels with the address
+	// until the byte for that address is the one being read.
+	wire       fx1d;
+	wire [3:0] color1d;
+	wire       v1d;
+	generate
+		if (FETCH_LEAD == 0) begin : g_nolead
+			assign fx1d = fx1; assign color1d = color1; assign v1d = v1;
+			assign rom_use_addr = rom_addr;
+		end else begin : g_lead
+			reg [5:0]  pl [0:FETCH_LEAD-1];   // {v, colour, fx}
+			reg [20:0] al [0:FETCH_LEAD-1];
+			integer k;
+			always @(posedge clk) if (ce) begin
+				pl[0] <= {v1, color1, fx1};
+				al[0] <= rom_addr;
+				for (k = 1; k < FETCH_LEAD; k = k + 1) begin
+					pl[k] <= pl[k-1];
+					al[k] <= al[k-1];
+				end
+			end
+			assign {v1d, color1d, fx1d} = pl[FETCH_LEAD-1];
+			assign rom_use_addr = al[FETCH_LEAD-1];
+		end
+	endgenerate
+
 	// ---- stage 2: ROM byte -> nibble. packed MSB: even x is the high nibble.
 	always @(posedge clk) if (ce) begin
-		pen       <= fx1 ? rom_data[3:0] : rom_data[7:4];
-		color     <= color1;
-		opaque    <= (fx1 ? rom_data[3:0] : rom_data[7:4]) != 4'hF;
-		pen_valid <= v1;
+		pen       <= fx1d ? rom_data[3:0] : rom_data[7:4];
+		color     <= color1d;
+		opaque    <= (fx1d ? rom_data[3:0] : rom_data[7:4]) != 4'hF;
+		pen_valid <= v1d;
 	end
 endmodule
