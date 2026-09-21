@@ -1,0 +1,48 @@
+# Jaleco Mega System 1 B/C/D MiSTerFPGA core — vendored dependency lock file.
+#
+# Fetched by tools/bootstrap.sh into gitignored destinations (see .gitignore:
+# /sys/, /rtl/third_party/). Never commit the fetched trees themselves —
+# only this lock file, which pins exact commits so builds are reproducible.
+#
+# Every pin here is carried over unchanged from Arcade-NMK16_MiSTer and
+# Arcade-SandScrp_MiSTer, where each commit is already built and proven on
+# hardware. Do not bump a pin during bringup: if this core misbehaves, a
+# dependency that is byte-identical to one running correctly on two other
+# cores is the one thing that can be ruled out for free.
+#
+# Verified via `git ls-remote` on 2026-08-31 for the inherited entries.
+# Re-verify before bumping any pin.
+#
+# NOT vendored, and deliberately so:
+#   rtl/tlcs90/      this project family's own from-scratch TLCS-90 core.
+#                    No open-source RTL exists for the ISA. Re-parameterised
+#                    here as the TMP91640 I/O MCU; tracked in git, not fetched.
+#   jt12, t80        needed by NMK16 and Sand Scorpion (YM2203 + Z80), NOT by
+#                    this board. MS1-B/C use a second 68000 and a YM2151, and
+#                    MS1-D has no FM at all. Both were copied in during
+#                    scaffolding and removed once the reuse set was checked
+#                    against docs/PLAN.md section 3. jt6295 vendors its own
+#                    copies of the two jt12_* files it needs, so nothing here
+#                    depends on the jt12 tree.
+#
+# format: name|kind|git_url|ref|dest_path|license|notes
+#   kind = repo   -> shallow-clone `ref` (a commit SHA) into dest_path, strip .git
+#   kind = file   -> clone `source_repo` (see notes) and copy one file into dest_path
+#   kind = subdir -> blob-filtered sparse depth-1 fetch of one path in a monorepo
+
+template_mister|repo|https://github.com/MiSTer-devel/Template_MiSTer.git|3ea1134cf05d62c2b1db30362277a823d739ced2|sys|GPL-2.0|Top-level MiSTer framework (hps_io, video_mixer, scandoubler, OSD, PLL/tcl scripts). Also the source for the Template.sv/.sdc/.qpf/.qsf skeleton copied once into the repo root (see tools/bootstrap.sh) — GPL-2.0-only, NOT compatible-by-default with the GPL-3.0-only components below in a combined work; flagged in docs/PLAN.md, resolve before any public release.
+fx68k|repo|https://github.com/ijor/fx68k.git|0602ee4627b10f301298f2673d826cdd6baa9327|rtl/third_party/fx68k|GPL-3.0|Motorola 68000 cycle-accurate core (Jorge Cwik / ijor). Flat repo: fx68k.sv, fx68kAlu.sv, uaddrPla.sv, .mem ROMs. TWO instances on this board in B and C mode (main @ 8 or 12 MHz, sound @ 7 MHz); in D mode the sound instance is held in reset and the main CPU drives the single banked OKI itself.
+jt51|repo|https://github.com/jotego/jt51.git|985a573dcfc1ff135553a39f7eae21d18ba57cbe|rtl/third_party/jt51|GPL-3.0-or-later|YM2151/OPM core (Jose Tejada). THE ONE NEW DEPENDENCY relative to NMK16/Sand Scorpion (docs/PLAN.md section 3). Same pin already used by Gunnail.rbf for the Afega boards, so it is not new code, only new to this repo. hdl/jt51.qip lists its files; cen = the 3.5 MHz chip clock here (7/2), cen_p1 = cen/2. Unused in D mode.
+jt6295|repo|https://github.com/jotego/jt6295.git|7d76b0be8cd8f85f3ae741178c9830b20e2071a1|rtl/third_party/jt6295|GPL-3.0-or-later|OKIM6295 ADPCM core (Jose Tejada). TWO instances in B and C at 4 MHz (2 MHz for hayaosi1, see docs/known-issues.md MS1-8); ONE instance in D at 2 MHz with eight-bank ROM switching driven by the main CPU. Vendors its own copies of jt12_comb.v and jt12_interpol.v, which is why the jt12 tree is not a dependency of this core.
+sdram|file|https://github.com/rmonic79/Arcade-Darius_MiSTer.git|HEAD:rtl/sdram.sv|rtl/sdram.sv|GPL-3.0-or-later (per file header, Copyright (c) 2018 Sorgelig)|No standalone upstream repo exists for this file — it's copy-pasted core-to-core. Seeded from this specific known-good copy, original blob e4228fb9bb0787f78e6a0f3bfcdc4399d89945c4.
+# *** THIS ONE IS MODIFIED AND TRACKED IN GIT, unlike the fetched entries. ***
+# Carried over from NMK16/Sand Scorpion with the REFRESH_CYCLES parameter, the
+# prio_mode port (round-robin / video-first / CPU-first / video-75%) and
+# dout*_pair, which returns two words per read transaction. bootstrap.sh skips
+# it because the file already exists; do NOT delete it to force a re-fetch,
+# that would silently revert those changes. This board asks more of it than
+# either predecessor — three tilemap layers plus sprites plus two CPUs — so
+# the arbiter priority mode is expected to need re-measuring at M3, not the
+# file itself.
+hiscore|repo|https://github.com/MiSTer-devel/Hiscores_MiSTer.git|31789f3b6bf61c379117f73adc879e3c9d5873ae|rtl/third_party/hiscore|GPL-3.0-or-later|MAME hiscore.dat save/load module (Alan Steremberg, Jim Gregory). MODIFIED, like rtl/sdram.sv: a dump-validation pass (SM_VALINIT..SM_VALDONE) before the restore — each entry's first/last byte must match the config's start/end values or the dump is discarded; and dpram_hs rewritten to a template Quartus will infer as M10K (upstream's write-through form built ~69k ALUTs at the HS_SCOREWIDTH this family needs). Also ties off hiscore_buffer's unconnected port B. Semantics unchanged.
+crt_adjust|repo|https://github.com/rmonic79/MiSTer-CRT-Adjust.git|c682de9f4acc61d8f4c7779efb48149d3baa3a8e|rtl/third_party/crt_adjust|GPL-3.0-or-later|"CRT Adjust" (Umberto Parisi / rmonic79): core-side analog CRT geometry — crt_adjust.sv (H-Size, H-Position, V-Shift through a one-line ping-pong buffer, sync kept native) and crt_vsize.sv (V-Size, PVM line-retimer or Cabinet photometric mode, self-measuring). Only rtl/crt_adjust.sv, rtl/crt_vsize.sv, LICENSE and README.md are committed. crt_adjust.sv is unmodified. *** crt_vsize.sv IS MODIFIED *** — one pipeline register (ring_q2) between the ring RAM's read mux and the Cabinet-mode square multiplier, that pipeline's phases moved one clock later, the integer square root split from 2x4 into 4x2 compare-subtract stages (needs clk/pixel >= 11), and the ring WRITE registered. Re-apply after any upstream bump. Wired by rtl/crt_chain.sv between video_retime and sys/video_mixer.sv. Needs clk/pixel >= 8 for Cabinet mode.
