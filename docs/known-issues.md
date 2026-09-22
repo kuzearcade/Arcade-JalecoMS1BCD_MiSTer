@@ -1066,175 +1066,64 @@ be held is only what the game observes but does not need in order to park:
 This also means OSD pause and the savestate freeze are **not** the same signal,
 and M4 should not try to make them one.
 
-### Remaining: USP, and it is getting the RESET value
+### Retracted: the "USP" finding was a mislabelled register
 
-With the skew gone, exactly one fx68k register still differs, at K=1:
+The previous entry here claimed USP was isolated as the fault and that the
+restore was handing back the reset stack pointer. **That was wrong on two
+counts and is retracted.**
 
-```
-USP(hi) A=0007  B=0008
-USP(lo) A=FFBA  B=0000      A = 0x0007FFBA,  B = 0x00080000
-```
-
-`0x00080000` is avspirit's **reset stack pointer**, straight from the reset
-vector. B is not getting a slightly wrong USP; it is getting the power-on
-value, as though the restore never reached it.
-
-An earlier note here dismissed USP on the grounds that A held `FFBA` constant
-across K=1..3, so the game never left supervisor mode. At K=4 it reads `FFAE`.
-It does change; three samples happened to agree and the inference was drawn
-from too little.
-
-The park module's decodes were then checked and are correct: the monitor's
-writes (`a[3:1]` = 0/1 SSP hi/lo, 2/3 USP hi/lo), its reads (`sel_code` /
-`sel_regs` split on `a[8]`, `regs_rd` on the same `a[3:1]`), and the savestate
-port (`ss_sel` 0..3 against image words 0x1D010..0x1D013). All agree with the
-monitor's `MON_BASE+0x100` / `+0x104`.
-
-**So inspection is exhausted and the next step is instrumentation**: expose
-`usp_reg` from the park module and log what it holds at four moments -- after
-the monitor's save write, after the image is streamed out, after the image is
-streamed back in, and as the monitor reads it on resume. That says which of the
-four steps loses the value, rather than which of them looks right.
-
-### Found while chasing it: the park's acknowledge ate a game interrupt
-
-`ms1_main.sv` retired one pending interrupt on ANY acknowledge cycle. The
-savestate park raises **level 7** and is acknowledged like any other, so taking
-a savestate silently cleared whatever the game had pending -- the run that
-resumed was no longer the run that was saved. The 68000 puts the acknowledged
-level on A3:A1 and this board uses only levels 1, 2 and 4, so the retirement is
-now gated on `iack_level != 7`.
-
-This is a genuine defect and the fix is kept, but it did not change the
-symptom by a single pixel. It is recorded because it is the third instance in
-this milestone of the same theme: **the savestate mechanism perturbing the
-machine it is supposed to be photographing** (MS1-35, MS1-36, and this).
-
-## MS1-34 — A restore written in its own always block does nothing, silently (closed)
-
-Four times in M3 a savestate restore was written as a separate
-`always @(posedge clk)` block from the logic owning the register: the raster
-counters, `pass_len`, `fb_rd_data`, and every scalar in `ms1_main`'s and
-`ms1_iomcu`'s misc regions. The owning block wins on the next clock, so the
-restore executes and is immediately overwritten.
-
-**Verilator does not warn.** It stayed completely silent on `fb_rd_data` being
-driven from two clocked blocks. Lint is not a guard for this; only structural
-care is. Every restore in this core now lives inside the block that owns its
-register, as the highest-priority branch after reset.
-
-Two things made this expensive to find. The restores were invisible in
-simulation -- the core simply behaved as though the state had not been
-restored, which looks exactly like missing state. And the registers concerned
-also free-run, so the image loopback could not see the bug either: they would
-differ on read-back whether or not the restore worked. Fixing the block
-placement changed no measurement at all until the free-running fix landed too.
-
-## MS1-35 — A probe that parks the CPU to look at it measures itself (closed)
-
-The first state-divergence probe parked both runs to stream an image out and
-compare. It reported divergence after a single frame: 69 words, in stack tops,
-park registers and the 68000 clock phase.
-
-All of it was the probe's own doing. Parking raises a level-7 interrupt and
-runs a monitor that pushes D0-D7/A0-A6 onto the GAME's stack, and it takes a
-variable number of cycles to get there, so two runs that park at slightly
-different instants show different stack tops regardless of whether anything
-diverged.
-
-Reading the arrays directly out of the model instead -- no parking, no monitor,
-no pushes -- reports game state **bit-identical** at the same points. The
-lesson is narrow and worth keeping: a savestate probe must not use the
-savestate mechanism to observe, because that mechanism perturbs the two things
-a savestate is most likely to get wrong, the stack and the clock phase.
-
-
-## MS1-36 — Resetting the sound subsystem changes main-CPU behaviour, and nothing explains how (open)
-
-Found while bisecting MS1-33. A debug reset mask (`ss_rst_dbg`, tied 0 in every
-real build) pulses a reset at one subsystem at the start of BOTH spans of a
-savestate round trip, so that subsystem enters each span from the same state.
-
-Measured at K=4 on avspirit, reference sim:
-
-| mask | what it does | result |
-|---|---|---|
-| 0 | no pulse | wram 98 words 0x07F76..0x07FFF, vram2 2 words |
-| 8 | pulse 80 ticks, resets **nothing** | **identical to mask 0** |
-| 1 | pulse + sound reset | wram 96 words 0x07F4F..0x07FDB, vram2 **7** words |
-| 2 | pulse + MCU reset | identical to mask 0 |
-| 4 | pulse + sprite reset | identical to mask 0 |
-
-Mask 8 is the control that matters: it runs the identical 80-tick pulse and
-resets nothing, and it reproduces mask 0 exactly. So the pulse is not a
-confound and the mask-1 difference is caused by resetting the sound subsystem.
-
-**This contradicts the design as read.** `latch_to_main` is left unconnected in
-`ms1bcd_core`, and in the reference sim `srom_ready` is tied high and both OKI
-stalls tied low. Tracing every output `ms1_sound` drives:
-
-- `latch_to_main` -- unconnected;
-- `rom_addr`, `oki1_rom_addr`, `oki2_rom_addr` -- reach only the testbench's
-  ROM arrays, which feed nothing back;
-- `snd_l`, `snd_r`, every `dbg_*` -- core outputs, consumed by nobody;
-- `ss_rdata`, `ss_parked`, `ss_replay_done` -- inactive while a span runs.
-
-None of that is a path to the main CPU or the video, so resetting sound should
-have behaved exactly like mask 8. It did not.
-
-Either there is a coupling not visible by inspection, or the model of the
-design here is wrong somewhere. It was claimed TWICE in this project's own
-notes that the sound side cannot reach the video, on the strength of
-`latch_to_main` alone; the measurement says that reasoning was at best
-incomplete.
-
-This is recorded separately from MS1-33 because it is not specific to
-savestates: if sound state can influence the main CPU by some path, that
-matters for the M2 gate 3 and 4 numbers as well, which were taken on the
-assumption that the two sides are independent.
-
-### Settled: there is no datapath, only a handshake
-
-Two plain 70-frame runs of the reference sim, identical but for the sound
-subsystem being held in reset for the whole of one of them, no savestate
-anywhere near either:
-
-```
-frames compared 70: 70 identical, 0 differing; 16 with content
-```
-
-Sixteen of those frames carry real content, so this is not the vacuous
-all-black comparison that has caught this project before. **Holding the sound
-subsystem in reset has no effect on the video whatsoever.** The reading of the
-design was right: `latch_to_main` is unconnected and nothing else `ms1_sound`
-drives reaches the main CPU or the video.
-
-The coupling is in the savestate handshake, and it is one this project
-introduced (`ms1bcd_core.sv:254`):
+First, the probe's register names were backwards. `fx68k.sv:1169` reads:
 
 ```systemverilog
-assign ss_frozen = ss_m68k_parked & ss_mcu_frozen & ss_snd_parked;
+localparam REG_USP = 15;
+localparam REG_SSP = 16;
 ```
 
-A park completes only when all three CPUs have parked, and the testbench spins
-on `ss_frozen`. Reset the sound CPU and it restarts its program, so next time
-it parks at a different instruction and takes a different number of ticks to
-reach it. The park therefore lasts a different length of time, and everything
-that free-runs during a park -- the raster, the sprite pass, the object-buffer
-copy -- advances by a different amount before the snapshot is taken. Sound
-never touches the video; it changes WHEN THE PARK ENDS.
+The probe labelled 15 as SSP and 16 as USP, so everything reported as "USP"
+was the **supervisor** stack pointer.
 
-Two consequences worth stating:
+Second, and more important: **a stack pointer sampled at an arbitrary raster
+instant is no more meaningful than a PC sampled there.** A7 moves constantly
+as the game pushes and pops. Two runs an instruction apart show different A7
+and it means nothing, exactly as was already said about `PcL` and then
+promptly forgotten when a different register showed the same shape.
 
-- **M2 gates 3 and 4 are not in doubt.** Those numbers were taken on plain
-  runs with no savestate involved, and the assumption behind them -- that the
-  sound and main sides are independent -- is now measured rather than merely
-  argued.
-- **Any savestate measurement that parks is sensitive to every CPU's park
-  latency, not just the one being studied.** That is the same lesson as
-  MS1-35 from a different direction: the parking mechanism perturbs, and a
-  bisection which resets a subsystem is also perturbing that subsystem's park
-  time. The reset-mask bisection result for the MCU and the sprite engine
-  (no effect at all) is unaffected, since "no change" cannot be manufactured
-  this way -- but a bisection that HAD shown a change would have needed this
-  control before it could be believed.
+### What the four-moment trace actually established
+
+`usp_reg` and `ssp_reg` were read directly out of the model at each step:
+
+```
+            usp_reg    ssp_reg    cpu reg[16] (=SSP)
+pre-park    00000000   00000000   0007FFFC
+1 parked    0007FFFC   0007FFBA   0007FFBA    <- monitor wrote it
+2 streamed  image 0x1D012/13 = 0007FFFC
+  reparked  0007FFFC   0007FF78   0007FF78
+3 restored  0007FFFC   0007FFBA   0007FF78    <- image written back
+```
+
+**The park register path is correct.** `ssp_reg` follows the monitor's writes
+(0007FFBA at the save, 0007FF78 at the re-park) and the image restores it
+exactly. `usp_reg` holds 0007FFFC throughout because the game never touches
+the user stack, which is the right behaviour, not a failure to update.
+
+So the suspect named in the previous commit is exonerated by its own trace.
+
+A limit of the instrument, noted so it is not misread later: the "4 resumed"
+sample is taken after `release()`, which ticks only 128 times. The monitor
+needs far longer than that to reload A7, pop 15 registers and RTE, so that row
+shows the machine mid-exit and must not be read as a final state.
+
+### Where this leaves it
+
+- The window-wide hold was a real fix: frame 3 went from 497 differing pixels
+  to 25, and the PC skew collapsed from ~0x500 to 2.
+- Arrays are identical through K=3 and diverge at K=4 (wram 95 words, vram2 2
+  words) -- the same 25-pixel glyph.
+- The image is proven complete by loopback, the park registers are proven
+  correct by direct trace, and MCU and sprite state are excluded by bisection.
+- Register-file comparisons at frame boundaries are now known to be useless
+  for PC and both stack pointers. Any future probe must compare them only at
+  equivalent points in the instruction stream, or not at all.
+
+The residue is 25 pixels on one glyph after a restore, from frame 3 onward,
+with no identified cause. That is where it rests.

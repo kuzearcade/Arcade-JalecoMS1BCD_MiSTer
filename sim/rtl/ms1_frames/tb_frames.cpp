@@ -498,6 +498,46 @@ int main(int argc, char **argv) {
 			return 0;
 		}
 
+		// MS1_SS_USP: follow usp_reg through the four moments it passes
+		// through. Four inspections in a row said the decodes look right while
+		// the value is demonstrably lost, so this reports WHICH STEP loses it.
+		if (getenv("MS1_SS_USP")) {
+			auto *R = top->rootp;
+			auto USP = [&]() -> uint32_t {
+				return (uint32_t)R->ms1bcd_core__DOT__u_main__DOT__u_park__DOT__usp_reg;
+			};
+			auto SSP = [&]() -> uint32_t {
+				return (uint32_t)R->ms1bcd_core__DOT__u_main__DOT__u_park__DOT__ssp_reg;
+			};
+			auto cpuUSP = [&]() -> uint32_t {
+				return ((uint32_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__regs68H[16] << 16)
+				     |  (uint32_t)R->ms1bcd_core__DOT__u_main__DOT__u_cpu__DOT__excUnit__DOT__regs68L[16];
+			};
+			printf("            %-10s %-10s %-10s\n", "usp_reg", "ssp_reg", "cpu USP");
+			printf("pre-park    %08X   %08X   %08X\n", USP(), SSP(), cpuUSP());
+			if (!park()) { printf("FAIL: never parked\n"); return 1; }
+			printf("1 parked    %08X   %08X   %08X   <- monitor wrote it\n",
+			       USP(), SSP(), cpuUSP());
+			stream_out();
+			std::vector<uint16_t> img0 = img;
+			printf("2 streamed  image[0x1D012]=%04X image[0x1D013]=%04X -> %04X%04X\n",
+			       img0[0x1D012], img0[0x1D013], img0[0x1D012], img0[0x1D013]);
+			release();
+			printf("  resumed   %08X   %08X   %08X\n", USP(), SSP(), cpuUSP());
+
+			long g = 0; while (g++ < 3 * 854016L) tick();   // let it run a little
+
+			if (!park()) { printf("FAIL: never parked (restore)\n"); return 1; }
+			printf("  reparked  %08X   %08X   %08X\n", USP(), SSP(), cpuUSP());
+			img = img0; stream_in();
+			printf("3 restored  %08X   %08X   %08X   <- image written back\n",
+			       USP(), SSP(), cpuUSP());
+			release();
+			printf("4 resumed   %08X   %08X   %08X   <- monitor read it\n",
+			       USP(), SSP(), cpuUSP());
+			return 0;
+		}
+
 		printf("savestate: parking...\n");
 		if (!park()) { printf("  FAIL: the core never parked\n"); return 1; }
 		printf("  parked; streaming %zu words out\n", SS_WORDS);
