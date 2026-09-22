@@ -84,6 +84,10 @@ module ms1_video #(
 	input               ss_wr,
 	input       [15:0]  ss_wdata,
 	output      [15:0]  ss_spr_rdata,
+	// Layer-opaque probes. These were read by the core as u_video.o0 /
+	// u_video.o2, a hierarchical reference INTO this module: Verilator
+	// resolves it, Quartus synthesis does not. Exposed as real ports.
+	output              dbg_o0, dbg_o2,
 	output      [31:0]  dbg_spr_pass_cycles,
 	output      [15:0]  dbg_spr_late_swaps,
 
@@ -148,6 +152,8 @@ module ms1_video #(
 	wire [3:0] p0q = p0, p1q = p1, p2q = p2;
 	wire [3:0] c0q = c0, c1q = c1, c2q = c2;
 	wire       o0q = o0, o1q = o1, o2q = o2;
+	assign dbg_o0 = o0;
+	assign dbg_o2 = o2;
 
 	// ---- sprite plane. Its readback is one cycle, the tilemaps are three,
 	// so the sprite pixel is delayed two stages to meet them.

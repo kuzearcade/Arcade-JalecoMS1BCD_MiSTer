@@ -102,6 +102,10 @@ module ms1_sound (
 	always @(posedge clk) begin
 		enPhi1 <= 1'b0; enPhi2 <= 1'b0;
 		if (reset) begin cpu_acc <= 27'd0; cpu_ph <= 1'b0; end
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd6)) cpu_acc[15:0] <= ss_wdata;
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd7)) begin
+			cpu_ph <= ss_wdata[11]; cpu_acc[26:16] <= ss_wdata[10:0];
+		end
 		else if (ss_active) begin enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else begin
 			// two edges per CPU cycle
@@ -121,6 +125,7 @@ module ms1_sound (
 	// straight on the gate (3) write counts.
 	reg [1:0] ymdiv;
 	always @(posedge clk) if (reset) ymdiv <= 2'd0;
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) ymdiv <= ss_wdata[5:4];
 		else if (ss_hold) ymdiv <= ymdiv;
 		else if (enPhi1) ymdiv <= ymdiv + 2'd1;
 	wire ym_cen    = enPhi1 & (ymdiv[0] == 1'b1);
@@ -132,6 +137,7 @@ module ms1_sound (
 	always @(posedge clk) begin
 		oki_cen <= 1'b0;
 		if (reset) okidiv <= 4'd0;
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) okidiv <= ss_wdata[3:0];
 		else if (ss_hold) okidiv <= okidiv;
 		else if (okidiv == 4'd11) begin okidiv <= 4'd0; oki_cen <= 1'b1; end
 		else okidiv <= okidiv + 4'd1;
@@ -182,6 +188,8 @@ module ms1_sound (
 	reg [15:0] latch_from_main;
 	always @(posedge clk) begin
 		if (reset) begin latch_from_main <= 16'd0; latch_to_main <= 16'd0; end
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd0)) latch_from_main <= ss_wdata;
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd1)) latch_to_main   <= ss_wdata;
 		else begin
 			if (latch_we) latch_from_main <= latch_data;
 			if (we && sel_latch) latch_to_main <= oEdb;
@@ -228,6 +236,8 @@ module ms1_sound (
 		// Held until one cen_p1 has actually sampled it: the 68000's data strobe
 		// is only ~10 clk_sys wide, while cen_p1 comes every 27, so tying the
 		// strobe to the bus cycle still missed busy about two times in three.
+		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd3)) chip_din <= ss_wdata[7:0];
+		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) chip_a0  <= ss_wdata[6];
 		if (ym_wr & ym_cen_p1) ym_wr <= 1'b0;
 		if (reset) begin
 			ym_wr <= 1'b0;
@@ -250,6 +260,7 @@ module ms1_sound (
 	reg [7:0] ym_reg_sel;
 	wire ym_wr_pulse = acc_edge & ~eRWn & sel_ym;
 	always @(posedge clk) begin
+		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd4)) ym_reg_sel <= ss_wdata[7:0];
 		if (ss_w & ss_ymsh) ymsh[ss_addr[7:0]] <= ss_wdata[7:0];
 		else if (ym_wr_pulse) begin
 			if (!chip_a0) ym_reg_sel <= chip_din;
@@ -340,21 +351,9 @@ module ms1_sound (
 			default: ss_smisc_rdata = 16'h0000;
 		endcase
 	end
-	always @(posedge clk) if (ss_w & ss_smisc) begin
-		case (ss_addr[3:0])
-			4'd0: latch_from_main <= ss_wdata;
-			4'd1: latch_to_main   <= ss_wdata;
-			4'd2: begin irq4_h <= ss_wdata[2]; irq2_h <= ss_wdata[1];
-			            ym_irq_d <= ss_wdata[0]; end
-			4'd3: chip_din   <= ss_wdata[7:0];
-			4'd4: ym_reg_sel <= ss_wdata[7:0];
-			4'd5: begin chip_a0 <= ss_wdata[6]; ymdiv <= ss_wdata[5:4];
-			            okidiv <= ss_wdata[3:0]; end
-			4'd6: cpu_acc[15:0]  <= ss_wdata;
-			4'd7: begin cpu_ph <= ss_wdata[11]; cpu_acc[26:16] <= ss_wdata[10:0]; end
-			default: ;
-		endcase
-	end
+	// Every scalar below is restored INSIDE the block that owns it. A
+	// separate restore block is a multiple driver: Verilator accepts it
+	// silently, Quartus refuses to elaborate. See MS1-34.
 	always @(posedge clk) begin
 		if      (ss_sram)  ss_rdata <= sram[ss_addr[14:0]];
 		else if (ss_ymsh)  ss_rdata <= {8'd0, ymsh[ss_addr[7:0]]};
@@ -378,6 +377,9 @@ module ms1_sound (
 		if (snd_rst) begin
 			irq4_h <= 1'b0; irq2_h <= 1'b0;
 			dbg_ymirq <= 32'd0; dbg_iack <= 32'd0;
+		end
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd2)) begin
+			irq4_h <= ss_wdata[2]; irq2_h <= ss_wdata[1]; ym_irq_d <= ss_wdata[0];
 		end
 		else begin
 			if (~ym_irq_n & ~ym_irq_d) dbg_ymirq <= dbg_ymirq + 1;

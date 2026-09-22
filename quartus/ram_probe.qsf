@@ -1,0 +1,42 @@
+# RAM-inference probe for the Jaleco MS1 B/C/D core.
+#
+# docs/PLAN.md M4 opens with "quartus_map first as a RAM-inference probe (every
+# array a real M10K, no duplicate copies)". This project exists ONLY for that:
+# ms1bcd_core is the top entity, with no MiSTer framework around it, so the
+# report is about the core's own arrays and nothing else. The real project
+# comes later.
+#
+# 4.C.1: an asynchronous read of any array becomes flip-flops -- Sand Scorpion
+# needed 41,709 ALMs of 41,910 until one such read was moved out of a byte-lane
+# case. 4.C.2: two readers cannot share one array; an M10K has two ports and
+# one of them is the write.
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY ms1bcd_core
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output
+
+set_global_assignment -name SEARCH_PATH ../rtl
+set_global_assignment -name SEARCH_PATH ../rtl/ms1bcd
+set_global_assignment -name SEARCH_PATH ../rtl/jaleco
+set_global_assignment -name SEARCH_PATH ../rtl/tlcs90
+set_global_assignment -name SEARCH_PATH ../rtl/savestate
+set_global_assignment -name SEARCH_PATH ../rtl/third_party/fx68k
+set_global_assignment -name SEARCH_PATH ../rtl/third_party/jt51/hdl
+set_global_assignment -name SEARCH_PATH ../rtl/third_party/jt6295/hdl
+
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/ms1bcd/ms1bcd_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/ms1bcd/ms1_main.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/ms1bcd/ms1_sound.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/jaleco/ms1_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/jaleco/ms1_tilemap.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/jaleco/ms1_sprites.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/jaleco/ms1_prio.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/jaleco/ms1_iomcu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/tlcs90/tlcs90.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/tlcs90/tlcs90_periph_ref.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/savestate/ss_m68k_park.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/third_party/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/third_party/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/third_party/fx68k/uaddrPla.sv
+set_global_assignment -name VERILOG_FILE ../rtl/third_party/jt51/hdl/jt51.v
+set_global_assignment -name VERILOG_FILE ../rtl/third_party/jt6295/hdl/jt6295.v

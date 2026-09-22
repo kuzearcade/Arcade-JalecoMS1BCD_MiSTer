@@ -216,8 +216,8 @@ module ms1bcd_core #(
 		if (reset) begin dbg_palnz <= 0; dbg_opaque0 <= 0; dbg_opaque2 <= 0; end
 		else if (ce_pix) begin
 			if (rgb_valid && rgb != 24'd0) dbg_palnz <= dbg_palnz + 1;
-			if (u_video.o0) dbg_opaque0 <= dbg_opaque0 + 1;
-			if (u_video.o2) dbg_opaque2 <= dbg_opaque2 + 1;
+			if (vid_o0) dbg_opaque0 <= dbg_opaque0 + 1;
+			if (vid_o2) dbg_opaque2 <= dbg_opaque2 + 1;
 		end
 	end
 
@@ -256,6 +256,7 @@ module ms1bcd_core #(
 	// 0x10000-0x17FFF and 0x1D02x/0x1D03x/0x1E0xx; everything else is the
 	// main half's, which includes the MCU's own window at 0x1C000.
 	wire [15:0] ss_main_rdata, ss_snd_rdata, ss_spr_rdata;
+	wire        vid_o0, vid_o2;
 	wire        ss_m68k_parked, ss_mcu_frozen, ss_snd_parked;
 	assign ss_frozen = ss_m68k_parked & ss_mcu_frozen & ss_snd_parked;
 	assign ss_parked = ss_m68k_parked | ss_snd_parked;
@@ -338,6 +339,7 @@ module ms1bcd_core #(
 		.spr_rom_addr(spr_rom_addr), .spr_rom_data(spr_rom_data),
 		.spr_rom_ready(spr_rom_ready),
 		.ss_rst_dbg(ss_rst_dbg[2]),
+		.dbg_o0(vid_o0), .dbg_o2(vid_o2),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_spr_rdata(ss_spr_rdata),
 		.dbg_spr_pass_cycles(dbg_spr_pass_cycles), .dbg_spr_late_swaps(dbg_spr_late_swaps),

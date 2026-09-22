@@ -159,8 +159,18 @@ module ms1_iomcu (
 		if (ss_w & ss_mmis & (ss_addr[3:0] == 4'd2)) main_irq2 <= ss_wdata[3];
 		else main_irq2 <= cen_eff & mem_rd & sel_in & (addr_bank == 4'd7);
 
-	always @(posedge clk) if (cen_eff) begin
-		if (mem_wr & sel_ram) iram[addr[8:0] - 9'h1C0] <= dout;
+	// ONE owner for iram. The savestate write used to sit in its own always
+	// block, which Verilator accepted silently and Quartus rejected outright
+	// ("can't resolve multiple constant drivers for net iram[0][7]"). Same
+	// hazard as MS1-34, fifth instance, and the first one a tool caught.
+	// Note the savestate write is NOT cen-gated: the engine runs at clk rate.
+	always @(posedge clk) begin
+		if (ss_w & ss_iram) begin
+			iram[{ss_addr[7:0], 1'b0}] <= ss_wdata[7:0];
+			iram[{ss_addr[7:0], 1'b1}] <= ss_wdata[15:8];
+		end else if (cen_eff && mem_wr && sel_ram) begin
+			iram[addr[8:0] - 9'h1C0] <= dout;
+		end
 	end
 
 	// combinational read, the bus convention tlcs90.sv documents
@@ -243,10 +253,6 @@ module ms1_iomcu (
 		endcase
 	end
 	always @(posedge clk) begin
-		if (ss_w & ss_iram) begin
-			iram[{ss_addr[7:0], 1'b0}] <= ss_wdata[7:0];
-			iram[{ss_addr[7:0], 1'b1}] <= ss_wdata[15:8];
-		end
 		// to_mcu is restored inside the block that owns it, further down:
 		// a restore in this block would be a second driver and would be
 		// silently overwritten on the next clock (see ms1_main.sv).

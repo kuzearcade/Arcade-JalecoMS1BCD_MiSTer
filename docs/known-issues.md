@@ -4,8 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Five are open**: two recorded during M0 and answerable off-board, MS1-31,
-which needs the board, and MS1-32 / MS1-33 from M3.
+**Six are open**: two from M0 answerable off-board, MS1-31 which needs the
+board, MS1-32 / MS1-33 from M3, and MS1-37 from M4.
 
 | | | |
 |---|---|---|
@@ -45,6 +45,8 @@ which needs the board, and MS1-32 / MS1-33 from M3.
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
 | MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
+| MS1-37 | Nine arrays do not infer as RAM; the core does not fit | **OPEN** — needs registered reads and per-reader duplication |
+| MS1-38 | quartus_map catches the MS1-34 driver class that Verilator ignores | closed — run synthesis as a linter from M1, not at M4 |
 
 ---
 
@@ -1127,3 +1129,47 @@ shows the machine mid-exit and must not be read as a final state.
 
 The residue is 25 pixels on one glyph after a restore, from frame 3 onward,
 with no identified cause. That is where it rests.
+
+
+## MS1-37 — Nine arrays do not infer as RAM; the core does not fit (open)
+
+See `docs/m4-ram-probe.md` for the full report. `quartus_map` on `ms1bcd_core`
+fails with Error (276003): the arrays that do not infer as M10K become
+flip-flops, roughly 1 Mbit of them on a device with about 83000 registers.
+
+Inferred: `sram`, `obj_b1`, `obj_b2`, `spr_b1`, `spr_b2` -- each with exactly
+one read and one write. Not inferred: `wram`, `vr0`, `vr1`, `vr2`, `pal`,
+`obj`, `vreg`, `iram`, `ymsh`.
+
+Two causes, both named in docs/PLAN.md 4.C before any of this was written:
+asynchronous reads (`always @*` indexing an array) become flip-flops, and two
+readers cannot share one array because an M10K's second port is the write.
+
+The fix is registering every array read and duplicating arrays per reader. Both
+change the video pipeline's timing, so **M1 and M2 gate 2 must be re-run after
+it** -- the re-validation is the real cost, not the edit.
+
+## MS1-38 — quartus_map catches the MS1-34 driver class that Verilator ignores (closed)
+
+MS1-34 records that a savestate restore written in its own `always` block is
+silently overwritten by the block owning the register, that this happened four
+times in M3, and that "Verilator does not warn ... only structural care is" a
+guard.
+
+The second half of that was wrong. `quartus_map` catches the entire class in
+seconds and refuses to elaborate on it:
+
+```
+Error (10028): Can't resolve multiple constant drivers for net "iram[0][7]"
+Error (10029): Constant driver at ms1_iomcu.sv(162)
+```
+
+The first M4 synthesis run found eight more instances that M3 had left in the
+tree -- `iram`, both sound latches, the sound interrupt latches, `chip_din`,
+`chip_a0`, `ym_reg_sel`, `ymdiv` and `okidiv`.
+
+Quartus was installed and working throughout M3. It was not run because
+synthesis sat behind a milestone boundary in the plan. **Synthesis is a linter
+for this class and should be run opportunistically from M1 onward.** A
+`quartus_map` pass costs minutes and would have turned MS1-34 from a recurring
+hazard into a single fix.
