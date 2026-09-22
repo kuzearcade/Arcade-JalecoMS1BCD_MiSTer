@@ -377,7 +377,7 @@ int main(int argc, char **argv) {
 				sn.ob1  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b1, 4096);
 				sn.ob2  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b2, 4096);
 				sn.sb1  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b1, 4096);
-				sn.plane = cp(R->ms1bcd_core__DOT__u_video__DOT__u_spr__DOT__plane, 65536);
+				sn.plane = cp(R->ms1bcd_core__DOT__u_video__DOT__u_spr__DOT__plane_e, 65536);
 				auto &M = R->ms1bcd_core__DOT__u_main__DOT__irq1_h;
 				(void)M;
 				sn.sc = {

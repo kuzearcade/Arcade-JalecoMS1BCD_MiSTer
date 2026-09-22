@@ -211,7 +211,8 @@ module ms1_main (
 	// clk_sys (8 MHz from 48), so this does not lengthen it.
 	reg  as_d1;
 	always @(posedge clk) as_d1 <= as_active;
-	wire arr_wait = as_active & eRWn & (sel_ram | sel_pal | sel_vreg | sel_obj) & ~as_d1;
+	wire arr_wait = as_active & eRWn & (sel_ram | sel_pal | sel_vreg | sel_obj
+	                                  | sel_v0 | sel_v1 | sel_v2) & ~as_d1;
 	always @(posedge clk) begin
 		if (reset) begin dbg_romwait <= 32'd0; dbg_romacc <= 32'd0; end
 		else begin
@@ -291,9 +292,6 @@ module ms1_main (
 				wram  [ss_addr[14:0]] <= ss_wdata;
 				wram_s[ss_addr[14:0]] <= ss_wdata;
 			end
-			if (ss_vr0)  vr0[ss_addr[12:0]]  <= ss_wdata;
-			if (ss_vr1)  vr1[ss_addr[12:0]]  <= ss_wdata;
-			if (ss_vr2)  vr2[ss_addr[12:0]]  <= ss_wdata;
 			if (ss_pal) begin
 				pal_v[ss_addr[9:0]] <= ss_wdata;
 				pal_c[ss_addr[9:0]] <= ss_wdata;
@@ -316,9 +314,6 @@ module ms1_main (
 				obj_v[obj_i] <= wdat;
 				obj_c[obj_i] <= wdat;
 			end
-			if (sel_v0)   vr0[v_i]     <= wdat;
-			if (sel_v1)   vr1[v_i]     <= wdat;
-			if (sel_v2)   vr2[v_i]     <= wdat;
 			if (sel_vreg) vreg[vreg_i] <= wdat;
 		end
 	end
@@ -348,9 +343,9 @@ module ms1_main (
 	// again, which is still inside the engine's RD_LAT).
 	always @(posedge clk) begin
 		if      (ss_wram) ss_rdata <= wram_q;
-		else if (ss_vr0)  ss_rdata <= vr0[ss_addr[12:0]];
-		else if (ss_vr1)  ss_rdata <= vr1[ss_addr[12:0]];
-		else if (ss_vr2)  ss_rdata <= vr2[ss_addr[12:0]];
+		else if (ss_vr0)  ss_rdata <= vr0_q;
+		else if (ss_vr1)  ss_rdata <= vr1_q;
+		else if (ss_vr2)  ss_rdata <= vr2_q;
 		else if (ss_pal)  ss_rdata <= pal_q;
 		else if (ss_vreg) ss_rdata <= vreg_q;
 		else if (ss_obj)  ss_rdata <= objc_q;
@@ -409,6 +404,26 @@ module ms1_main (
 		cp_run <= buf_busy;
 	end
 
+	// ---- scroll VRAM: one true-dual-port set each (NMK16 NMK-10's v3 shape).
+	// Port A is the CPU and the savestate, coded as read-or-write with a
+	// new-data read. Port B is the tilemap's read. Coding the CPU read as a
+	// plain registered read instead makes the read old-data on a same-address
+	// write, which Quartus 17 can only meet with a second full copy.
+	wire        v0_we = (ss_w & ss_vr0) | (we & sel_v0);
+	wire        v1_we = (ss_w & ss_vr1) | (we & sel_v1);
+	wire        v2_we = (ss_w & ss_vr2) | (we & sel_v2);
+	wire [12:0] v_ai  = ss_active ? ss_addr[12:0] : v_i;
+	wire [15:0] v_ad  = ss_active ? ss_wdata      : wdat;
+	reg  [15:0] vr0_q, vr1_q, vr2_q;
+	always @(posedge clk) begin
+		if (v0_we) begin vr0[v_ai] <= v_ad; vr0_q <= v_ad; end
+		else       vr0_q <= vr0[v_ai];
+		if (v1_we) begin vr1[v_ai] <= v_ad; vr1_q <= v_ad; end
+		else       vr1_q <= vr1[v_ai];
+		if (v2_we) begin vr2[v_ai] <= v_ad; vr2_q <= v_ad; end
+		else       vr2_q <= vr2[v_ai];
+	end
+
 	// ---- video read ports.
 	// COMBINATIONAL on purpose: ms1_tilemap and ms1_sprites register their
 	// ADDRESS and expect the data in the following cycle, which is the bus
@@ -416,10 +431,10 @@ module ms1_main (
 	// sim/rtl/video_state. Making these registered instead would insert a
 	// second cycle of latency and quietly shift every fetch by one.
 	// (On hardware these become M10K reads with the same one-cycle shape.)
-	always @* begin
-		v0_rd_data  = vr0[v0_rd_addr];
-		v1_rd_data  = vr1[v1_rd_addr];
-		v2_rd_data  = vr2[v2_rd_addr];
+	always @(posedge clk) begin
+		v0_rd_data <= vr0[v0_rd_addr];
+		v1_rd_data <= vr1[v1_rd_addr];
+		v2_rd_data <= vr2[v2_rd_addr];
 	end
 
 	// The palette read is REGISTERED, and on clk rather than on ce. The
@@ -543,9 +558,9 @@ module ms1_main (
 		else if (sel_ram)  rdat = wram_q;
 		else if (sel_pal)  rdat = pal_q;
 		else if (sel_obj)  rdat = objc_q;
-		else if (sel_v0)   rdat = vr0[v_i];
-		else if (sel_v1)   rdat = vr1[v_i];
-		else if (sel_v2)   rdat = vr2[v_i];
+		else if (sel_v0)   rdat = vr0_q;
+		else if (sel_v1)   rdat = vr1_q;
+		else if (sel_v2)   rdat = vr2_q;
 		else if (sel_vreg) rdat = vreg_q;
 		else if (sel_prot) rdat = {8'h00, prot_rd};
 		else               rdat = 16'h0000;

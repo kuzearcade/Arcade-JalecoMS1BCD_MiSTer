@@ -265,6 +265,9 @@ module ms1_sound (
 	reg [7:0] ymsh [0:255];
 	reg [7:0] ym_reg_sel;
 	wire ym_wr_pulse = acc_edge & ~eRWn & sel_ym;
+	wire [7:0] ymsh_ri = ss_active ? ss_addr[7:0] : rp_idx;
+	reg  [7:0] ymsh_q;
+	always @(posedge clk) ymsh_q <= ymsh[ymsh_ri];
 	always @(posedge clk) begin
 		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd4)) ym_reg_sel <= ss_wdata[7:0];
 		if (ss_w & ss_ymsh) ymsh[ss_addr[7:0]] <= ss_wdata[7:0];
@@ -302,7 +305,7 @@ module ms1_sound (
 	jt51 u_ym (
 		.rst(snd_rst), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
 		.cs_n(1'b0), .wr_n(~(ym_wr | rp_run)), .a0(rp_run ? rp_phase : chip_a0),
-		.din(rp_run ? (rp_phase ? ymsh[rp_idx] : rp_idx) : chip_din),
+		.din(rp_run ? (rp_phase ? ymsh_q : rp_idx) : chip_din),
 		.dout(ym_dout), .ct1(), .ct2(), .irq_n(ym_irq_n),
 		.sample(), .left(), .right(),
 		.xleft(ym_l), .xright(ym_r)
@@ -362,7 +365,7 @@ module ms1_sound (
 	// silently, Quartus refuses to elaborate. See MS1-34.
 	always @(posedge clk) begin
 		if      (ss_sram)  ss_rdata <= sram_q;
-		else if (ss_ymsh)  ss_rdata <= {8'd0, ymsh[ss_addr[7:0]]};
+		else if (ss_ymsh)  ss_rdata <= {8'd0, ymsh_q};
 		else if (ss_spark) ss_rdata <= ss_spark_rdata;
 		else if (ss_smisc) ss_rdata <= ss_smisc_rdata;
 		else               ss_rdata <= 16'h0000;

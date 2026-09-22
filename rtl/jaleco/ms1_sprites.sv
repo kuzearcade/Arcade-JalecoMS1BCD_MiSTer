@@ -85,7 +85,16 @@ module ms1_sprites (
 	output reg  [15:0]  ss_rdata
 );
 	// ---------------------------------------------------------------- plane
-	reg [8:0]  plane [0:65535];
+	// TWO COPIES of the plane, written identically on the same clock.
+	// The true-dual-port shape does not apply here: fb_wr_addr is REGISTERED
+	// from cur_fb, so when fb_we asserts a cycle later the engine's read
+	// address has already advanced -- the write and the read are a pixel
+	// apart and cannot share one port. So it is 1 write + 2 reads, and the
+	// second reader needs its own copy, the same as wram and obj.
+	//   plane_e -- the engine's read-modify-write (and the savestate)
+	//   plane_d -- the display readback
+	reg [8:0]  plane_e [0:65535];
+	reg [8:0]  plane_d [0:65535];
 	wire ss_plane = ss_active & (ss_addr[19:16] == 4'h2);    // 0x20000 65536
 	// The blit engine's own state. The plane alone is not enough: a save can
 	// land mid-pass, and even between passes the engine carries the object
@@ -96,16 +105,36 @@ module ms1_sprites (
 	// every frame after new content appeared.
 	wire ss_fsm = ss_active & (ss_addr[19:5] == 15'h0E83);   // 0x1D060 32
 	reg [15:0] eng_addr;
-	wire [8:0] eng_q = plane[eng_addr];      // port A read
+	// Port A: the engine's read-modify-write, shared with the savestate.
+	// Coded read-or-write with a new-data read (NMK16 NMK-10's shape) so the
+	// whole plane is one true-dual-port set rather than flip-flops. cur_fb is
+	// stable across S_BA and S_BB, so the registered read lands exactly where
+	// the old combinational one did.
+	wire [15:0] plane_a = ss_active ? ss_addr[15:0] : cur_fb;
+	reg  [8:0]  eng_q;
 	reg [15:0] fb_wr_addr;
 	reg  [8:0] fb_wr_data;
 	reg        fb_we;
 
+	// one write, one read, per copy
+	wire        pl_we   = (ss_plane & ss_wr) | fb_we;
+	wire [15:0] pl_wa   = (ss_plane & ss_wr) ? ss_addr[15:0] : fb_wr_addr;
+	wire  [8:0] pl_wd   = (ss_plane & ss_wr) ? ss_wdata[8:0] : fb_wr_data;
 	always @(posedge clk) begin
-		if (ss_plane & ss_wr) plane[ss_addr[15:0]] <= ss_wdata[8:0];
-		else if (fb_we)       plane[fb_wr_addr] <= fb_wr_data;
-		if (rd_ce) fb_rd_data <= plane[fb_rd_addr];   // port B read
-		ss_rdata <= ss_fsm ? ss_fsm_rdata : {7'd0, plane[ss_addr[15:0]]};
+		if (pl_we) plane_e[pl_wa] <= pl_wd;
+		eng_q <= plane_e[plane_a];
+		ss_rdata <= ss_fsm ? ss_fsm_rdata : {7'd0, eng_q};
+	end
+
+	// Port B: the display readback, in a block OF ITS OWN and ungated.
+	// Quartus infers each port of a true-dual-port set from its own always
+	// block; with both ports in one block it fell back to "asynchronous read
+	// logic" and the whole 576 Kbit plane stayed in flip-flops. The rd_ce gate
+	// is dropped too -- fb_rd_addr only changes on the pixel enable, so
+	// reading every clock yields the same value wherever it is sampled.
+	always @(posedge clk) begin
+		if (pl_we) plane_d[pl_wa] <= pl_wd;
+		fb_rd_data <= plane_d[fb_rd_addr];
 	end
 
 	// ------------------------------------------------------------- sequencer

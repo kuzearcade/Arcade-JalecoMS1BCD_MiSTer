@@ -4,8 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Six are open**: two from M0 answerable off-board, MS1-31 which needs the
-board, MS1-32 / MS1-33 from M3, and MS1-37 from M4.
+**Five are open**: two from M0 answerable off-board, MS1-31 which needs the
+board, and MS1-32 / MS1-33 from M3.
 
 | | | |
 |---|---|---|
@@ -45,7 +45,7 @@ board, MS1-32 / MS1-33 from M3, and MS1-37 from M4.
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
 | MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
-| MS1-37 | Nine arrays do not infer as RAM; the core does not fit | **OPEN** — needs registered reads and per-reader duplication |
+| MS1-37 | Nine arrays do not infer as RAM; the core does not fit | closed — every array now block RAM; registers 996504 -> 11630 |
 | MS1-38 | quartus_map catches the MS1-34 driver class that Verilator ignores | closed — run synthesis as a linter from M1, not at M4 |
 
 ---
@@ -1173,3 +1173,53 @@ synthesis sat behind a milestone boundary in the plan. **Synthesis is a linter
 for this class and should be run opportunistically from M1 onward.** A
 `quartus_map` pass costs minutes and would have turned MS1-34 from a recurring
 hazard into a single fix.
+
+
+### MS1-37 closed (2026-09-22)
+
+Every array in the core now infers as block RAM.
+
+| | before | after |
+|---|---:|---:|
+| Combinational ALUTs | 986368 | **18655** |
+| Dedicated logic registers | 996504 | **11630** |
+| Block memory bits | 1826561 | **3401238** |
+| Uninferred arrays | 9 | **0** |
+
+332 of 557 M10K (60 %), about 14 % of the device's registers. Frames were
+re-checked after every step: 70 of 70 identical, 16 with content, every time.
+
+**Three remedies, chosen by how the readers relate.** This is the rule the
+whole exercise produced:
+
+| readers | remedy |
+|---|---|
+| mutually exclusive (CPU + savestate) | one registered read, address muxed |
+| concurrent, sharing one address | read-or-write port, new-data read -> one true-dual-port set |
+| concurrent, different addresses | duplicate, write both copies on the same clock |
+
+The middle one came from NMK16's NMK-10, which had already hit this and
+settled the coding shape with an isolated four-variant synthesis test: a plain
+registered read is **old-data** on a same-address write, which Quartus 17 can
+only meet with a simple-dual-port set PLUS a second full copy. Coding the port
+as read-or-write returning the data being written makes it new-data, and one
+set serves both readers -- free, because the 68000 never consumes the read of
+a write cycle. That saved about 39 M10K on the three scroll VRAMs.
+
+**Registering on `clk`, not on `ce`, is what made it free.** An address that
+only changes on a pixel enable has eight clocks of slack, so the data is valid
+one clock later and seven before it is used. The `VRAM_LAT` and `vpipe`
+re-timing this work was planned around never had to happen.
+
+**Two wrong turns, both from applying a technique without reading the
+consumer.** Pipelining the buffer copies fixed one array and cost four others,
+because each has two readers and registering only one made three ports. And
+the sprite plane was misfiled as the true-dual-port case: `fb_wr_addr` is
+registered from `cur_fb`, so when `fb_we` asserts the read address has already
+advanced -- write and read are a pixel apart and cannot share a port. It needed
+duplication, at 58 M10K.
+
+**M10K is now the resource to watch, not registers.** 332 of 557 leaves 225 for
+the framework, and docs/PLAN.md 4.C.4 records a silent cliff near 539/553 where
+Quartus stops inferring the framework's own RAMs with no message at all. The
+number to check is the total after `sys/` is added.

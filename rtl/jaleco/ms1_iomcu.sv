@@ -176,7 +176,7 @@ module ms1_iomcu (
 	// combinational read, the bus convention tlcs90.sv documents
 	always @* begin
 		if      (sel_rom)  din = rom_data;
-		else if (sel_ram)  din = iram[addr[8:0] - 9'h1C0];
+		else if (sel_ram)  din = iram_q;
 		else if (sel_preg) din = preg_rdata;
 		else               din = in_mux;
 	end
@@ -208,6 +208,12 @@ module ms1_iomcu (
 	wire ss_prg  = ss_active & (ss_addr[19:5] == 15'h0E09);  // 0x1C120 24 (32 slot)
 	wire ss_mmis = ss_active & (ss_addr[19:4] == 16'h1C14);  // 0x1C140
 	wire ss_w    = ss_active & ss_wr;
+	wire [8:0] iram_ri = ss_active ? {ss_addr[7:0], 1'b0} : (addr[8:0] - 9'h1C0);
+	reg  [7:0] iram_q, iram_q_hi;
+	always @(posedge clk) begin
+		iram_q    <= iram[iram_ri];
+		iram_q_hi <= iram[{ss_addr[7:0], 1'b1}];
+	end
 
 	tlcs90 u_cpu (
 		.clk(clk), .cen(cen_eff), .reset(reset),
@@ -256,8 +262,7 @@ module ms1_iomcu (
 		// to_mcu is restored inside the block that owns it, further down:
 		// a restore in this block would be a second driver and would be
 		// silently overwritten on the next clock (see ms1_main.sv).
-		if      (ss_iram) ss_rdata <= {iram[{ss_addr[7:0], 1'b1}],
-		                               iram[{ss_addr[7:0], 1'b0}]};
+		if      (ss_iram) ss_rdata <= {iram_q_hi, iram_q};
 		else if (ss_cpu)  ss_rdata <= ss_cpu_rdata;
 		else if (ss_prg)  ss_rdata <= ss_prg_rdata;
 		else if (ss_mmis) ss_rdata <= ss_mmis_rdata;
