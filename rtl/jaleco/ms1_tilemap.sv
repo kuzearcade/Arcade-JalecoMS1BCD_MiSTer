@@ -147,9 +147,12 @@ module ms1_tilemap #(
 	reg       fx1;
 	reg [3:0] color1;
 	reg       v1;
-	// Part-selecting a concatenation directly -- {...}[20:0] -- is accepted by
-	// Verilator and REJECTED by Quartus 17's Verilog parser. The terms are
-	// named here instead, which is the same hardware and parses everywhere.
+	// Part-selecting a concatenation directly -- {...}[20:0] -- parses in
+	// simulation but is REJECTED by Quartus 17. The terms are named here
+	// instead: same hardware, parses everywhere.
+	//
+	// (A comment line must not START with the name of the simulator used
+	// here -- it is read as a lint directive and errors out.)
 	wire [22:0] w_row_term = {18'd0, fy0, 2'd0};
 	wire [21:0] w_col_term = {20'd0, fx0[2:1]};
 	always @(posedge clk) if (ce) begin

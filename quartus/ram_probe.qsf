@@ -40,3 +40,4 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/third_party/fx68k/fx68kAlu
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/third_party/fx68k/uaddrPla.sv
 set_global_assignment -name VERILOG_FILE ../rtl/third_party/jt51/hdl/jt51.v
 set_global_assignment -name VERILOG_FILE ../rtl/third_party/jt6295/hdl/jt6295.v
+

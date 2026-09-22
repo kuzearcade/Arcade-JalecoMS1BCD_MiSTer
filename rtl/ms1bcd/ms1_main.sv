@@ -205,6 +205,13 @@ module ms1_main (
 
 	// Hold the bus cycle until the program byte is actually there.
 	wire rom_stall = as_active & sel_rom & ~rom_ready;
+
+	// A registered array read is valid one clock after the address settles, so
+	// DTACK is held for that clock. The 68000's bus cycle here is about 24
+	// clk_sys (8 MHz from 48), so this does not lengthen it.
+	reg  as_d1;
+	always @(posedge clk) as_d1 <= as_active;
+	wire arr_wait = as_active & eRWn & sel_ram & ~as_d1;
 	always @(posedge clk) begin
 		if (reset) begin dbg_romwait <= 32'd0; dbg_romacc <= 32'd0; end
 		else begin
@@ -216,7 +223,15 @@ module ms1_main (
 	always @(posedge clk) as_d_r <= as_active;
 
 	// ------------------------------------------------------------ memories
-	reg [15:0] wram [0:32767];
+	// TWO COPIES of work RAM, written identically on the same clock.
+	// An M10K has two ports and one of them is the write (docs/PLAN.md 4.C.2),
+	// and work RAM has two concurrent readers: the CPU, and the sprite-RAM
+	// buffer copy -- sprite RAM lives at work-RAM word 0x4000, and the copy
+	// runs during vblank while the CPU is still executing. Quartus reported
+	// this as "uninferred due to asynchronous read logic" even though both
+	// reads are synchronous; the real objection is the port count.
+	reg [15:0] wram  [0:32767];   // read by the CPU and the savestate
+	reg [15:0] wram_s[0:32767];   // read by the sprite buffer copy only
 	reg [15:0] pal  [0:1023];
 	reg [15:0] obj  [0:4095];
 	reg [15:0] vr0  [0:8191];
@@ -263,7 +278,10 @@ module ms1_main (
 		dbg_ramw_data <= ram_wdat;
 		if (ss_w) begin
 			// The engine owns the ports while it is streaming an image down.
-			if (ss_wram) wram[ss_addr[14:0]] <= ss_wdata;
+			if (ss_wram) begin
+				wram  [ss_addr[14:0]] <= ss_wdata;
+				wram_s[ss_addr[14:0]] <= ss_wdata;
+			end
 			if (ss_vr0)  vr0[ss_addr[12:0]]  <= ss_wdata;
 			if (ss_vr1)  vr1[ss_addr[12:0]]  <= ss_wdata;
 			if (ss_vr2)  vr2[ss_addr[12:0]]  <= ss_wdata;
@@ -271,7 +289,10 @@ module ms1_main (
 			if (ss_vreg) vreg[ss_addr[8:0]]  <= ss_wdata;
 			if (ss_obj)  obj[ss_addr[11:0]]  <= ss_wdata;
 		end else if (we) begin
-			if (sel_ram)  wram[wram_i] <= ram_wdat;
+			if (sel_ram) begin
+				wram  [wram_i] <= ram_wdat;
+				wram_s[wram_i] <= ram_wdat;
+			end
 			if (sel_pal)  pal[pal_i]   <= wdat;
 			if (sel_obj)  obj[obj_i]   <= wdat;
 			if (sel_v0)   vr0[v_i]     <= wdat;
@@ -305,7 +326,7 @@ module ms1_main (
 	// ---- savestate readback, registered once here (the core registers it
 	// again, which is still inside the engine's RD_LAT).
 	always @(posedge clk) begin
-		if      (ss_wram) ss_rdata <= wram[ss_addr[14:0]];
+		if      (ss_wram) ss_rdata <= wram_q;
 		else if (ss_vr0)  ss_rdata <= vr0[ss_addr[12:0]];
 		else if (ss_vr1)  ss_rdata <= vr1[ss_addr[12:0]];
 		else if (ss_vr2)  ss_rdata <= vr2[ss_addr[12:0]];
@@ -321,6 +342,15 @@ module ms1_main (
 		else if (ss_misc) ss_rdata <= ss_misc_rdata;
 		else              ss_rdata <= 16'h0000;
 	end
+
+	// ---- work RAM read port.
+	// A single REGISTERED read, address muxed between the CPU and the
+	// savestate engine, which never run at the same time (the core is parked
+	// while an image streams). An asynchronous read would leave all 512 Kbit
+	// of this as flip-flops -- MS1-37, docs/PLAN.md 4.C.1.
+	wire [14:0] wram_rd_i = ss_active ? ss_addr[14:0] : wram_i;
+	reg  [15:0] wram_q;
+	always @(posedge clk) wram_q <= wram[wram_rd_i];
 
 	// ---- video read ports.
 	// COMBINATIONAL on purpose: ms1_tilemap and ms1_sprites register their
@@ -356,12 +386,22 @@ module ms1_main (
 			if (ss_sb2) spr_b2[ss_addr[11:0]] <= ss_wdata;
 		end
 		else if (buf_busy) begin
+			// The copy stays in THIS block: obj_b1 and spr_b1 are also written
+			// by the savestate restore above, and a copy in a block of its own
+			// would be a second driver.
+			//
+			// It was briefly pipelined -- each source registered on one clock,
+			// written on the next -- to stop wram_s reading as an asynchronous
+			// read. That worked for wram_s and COST inference on obj_b1,
+			// obj_b2, spr_b1 and spr_b2, taking the total from six inferred
+			// arrays to two, because registering obj_b1/spr_b1 here gave each
+			// of them a second reader. One uninferred array is cheaper than
+			// four, so it is reverted. See MS1-37.
 			obj_b2[bufi[11:0]] <= obj_b1[bufi[11:0]];
 			obj_b1[bufi[11:0]] <= obj[bufi[11:0]];
 			spr_b2[bufi[11:0]] <= spr_b1[bufi[11:0]];
-			// sprite RAM is work RAM + 0x8000, i.e. word 0x4000 upwards
-			// sprite RAM is work RAM + 0x8000 BYTES, i.e. word 0x4000
-			spr_b1[bufi[11:0]] <= wram[15'h4000 + {3'd0, bufi[11:0]}];
+			// sprite RAM is work RAM + 0x8000 BYTES, i.e. word 0x4000 upwards
+			spr_b1[bufi[11:0]] <= wram_s[15'h4000 + {3'd0, bufi[11:0]}];
 			if (bufi == 13'd4095) buf_busy <= 1'b0;
 			else bufi <= bufi + 13'd1;
 		end
@@ -374,25 +414,67 @@ module ms1_main (
 	// ---- video registers, at their System B offsets (the harness feeds
 	// System C's addresses through the same array, since vreg is indexed by
 	// the low bits of whichever window the mode decoded)
-	assign reg_active_layers = is_c ? vreg[9'h104] : vreg[9'h000];
-	assign reg_sprite_flag   = is_c ? vreg[9'h100] : vreg[9'h080];
-	assign reg_sprite_bank   = is_c ? vreg[9'h084] : 16'h0000;
-	assign reg_screen_flag   = is_c ? vreg[9'h184] : vreg[9'h180];
-	assign reg_t0_sx         = is_c ? vreg[9'h000] : vreg[9'h100];
-	assign reg_t0_sy         = is_c ? vreg[9'h001] : vreg[9'h101];
-	assign reg_t0_ctrl       = is_c ? vreg[9'h002] : vreg[9'h102];
-	assign reg_t1_sx         = is_c ? vreg[9'h004] : vreg[9'h104];
-	assign reg_t1_sy         = is_c ? vreg[9'h005] : vreg[9'h105];
-	assign reg_t1_ctrl       = is_c ? vreg[9'h006] : vreg[9'h106];
-	assign reg_t2_sx         = is_c ? vreg[9'h080] : vreg[9'h004];
-	assign reg_t2_sy         = is_c ? vreg[9'h081] : vreg[9'h005];
-	assign reg_t2_ctrl       = is_c ? vreg[9'h082] : vreg[9'h006];
+	// VIDEO REGISTER SHADOWS.
+	// These used to index `vreg` directly -- 26 constant-index reads across the
+	// two modes. No M10K can serve that, so the array never inferred and its
+	// 8 Kbit became flip-flops (MS1-37). They are discrete video registers, not
+	// really a RAM, so each live one is shadowed here on write. That leaves
+	// `vreg` itself with a single reader and costs 14 x 16 = 224 flip-flops.
+	//
+	// The shadow must follow BOTH writers of the array: the CPU and the
+	// savestate restore, or a loaded state would show the previous scroll.
+	reg [15:0] sh_active, sh_sflag, sh_sbank, sh_scrf;
+	reg [15:0] sh_t0x, sh_t0y, sh_t0c, sh_t1x, sh_t1y, sh_t1c,
+	           sh_t2x, sh_t2y, sh_t2c;
+	wire [8:0] vw_i  = ss_w & ss_vreg ? ss_addr[8:0] : vreg_i;
+	wire [15:0] vw_d = ss_w & ss_vreg ? ss_wdata     : wdat;
+	wire        vw_e = (ss_w & ss_vreg) | (we & sel_vreg);
+	always @(posedge clk) if (vw_e) begin
+		if (is_c) begin
+			case (vw_i)
+				9'h104: sh_active <= vw_d;  9'h100: sh_sflag <= vw_d;
+				9'h084: sh_sbank  <= vw_d;  9'h184: sh_scrf  <= vw_d;
+				9'h000: begin sh_t0x <= vw_d; end
+				9'h001: sh_t0y <= vw_d;     9'h002: sh_t0c <= vw_d;
+				9'h004: sh_t1x <= vw_d;     9'h005: sh_t1y <= vw_d;
+				9'h006: sh_t1c <= vw_d;     9'h080: sh_t2x <= vw_d;
+				9'h081: sh_t2y <= vw_d;     9'h082: sh_t2c <= vw_d;
+				default: ;
+			endcase
+		end else begin
+			case (vw_i)
+				9'h000: sh_active <= vw_d;  9'h080: sh_sflag <= vw_d;
+				9'h180: sh_scrf   <= vw_d;
+				9'h100: sh_t0x <= vw_d;     9'h101: sh_t0y <= vw_d;
+				9'h102: sh_t0c <= vw_d;     9'h104: sh_t1x <= vw_d;
+				9'h105: sh_t1y <= vw_d;     9'h106: sh_t1c <= vw_d;
+				9'h004: sh_t2x <= vw_d;     9'h005: sh_t2y <= vw_d;
+				9'h006: sh_t2c <= vw_d;
+				default: ;
+			endcase
+		end
+	end
+	// System C's 0x104 is layer-1 X in B and active-layers in C, and 0x000 is
+	// the reverse; the case above is split by mode for exactly that reason.
+	assign reg_active_layers = sh_active;
+	assign reg_sprite_flag   = sh_sflag;
+	assign reg_sprite_bank   = is_c ? sh_sbank : 16'h0000;
+	assign reg_screen_flag   = sh_scrf;
+	assign reg_t0_sx         = sh_t0x;
+	assign reg_t0_sy         = sh_t0y;
+	assign reg_t0_ctrl       = sh_t0c;
+	assign reg_t1_sx         = sh_t1x;
+	assign reg_t1_sy         = sh_t1y;
+	assign reg_t1_ctrl       = sh_t1c;
+	assign reg_t2_sx         = sh_t2x;
+	assign reg_t2_sy         = sh_t2y;
+	assign reg_t2_ctrl       = sh_t2c;
 
 	wire [7:0] prot_rd;
 	always @* begin
 		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
 		else if (sel_rom)  rdat = rom_data;
-		else if (sel_ram)  rdat = wram[wram_i];
+		else if (sel_ram)  rdat = wram_q;
 		else if (sel_pal)  rdat = pal[pal_i];
 		else if (sel_obj)  rdat = obj[obj_i];
 		else if (sel_v0)   rdat = vr0[v_i];
@@ -578,7 +660,7 @@ module ms1_main (
 		// 68000 prefers it over VPA, which turns an AUTOVECTORED interrupt
 		// into a vectored one and fetches vector 0 off an undriven bus.
 		// MAME's set_input_line/HOLD_LINE is autovectored.
-		.DTACKn(~(as_active & ~iack & ~rom_stall)), .VPAn(~iack), .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
+		.DTACKn(~(as_active & ~iack & ~rom_stall & ~arr_wait)), .VPAn(~iack), .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
 		.IPL0n(~ipl[0]), .IPL1n(~ipl[1]), .IPL2n(~ipl[2]),
 		.iEdb(iEdb), .oEdb(oEdb), .eab(eab)
 	);
