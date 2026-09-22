@@ -1037,8 +1037,64 @@ on when RESUME is seen. The raster is restored, and the CPU's own clock phase
 is restored, but the number of cycles the monitor itself burns on the way out
 is not necessarily equal in the two runs.
 
-Testing that means instrumenting the park module to count cycles from RESUME
-to RTE and comparing the two spans -- a measurement, not another fix.
+### Fixed: hold the machine still for the WHOLE window
+
+The hold that existed covered only `ss_active`, the transfer. The park and the
+resume either side of it ran free, so the raster advanced while the CPU
+executed its monitor. Extended to `ss_freeze | ss_active | ss_resume`:
+
+| | before | after |
+|---|---|---|
+| frame 3 after restore | 497 px | **25 px** |
+| `fx68k PcL` | differed at every K | no longer differs (2 apart at K=1, was ~0x500) |
+| `fx68k D0` | differed | no longer differs |
+
+**A savestate park is not a pause and cannot be implemented as one.** The first
+attempt held everything and deadlocked: freezing the MCU divider stopped
+`mcu_cen_tick`, the TLCS-90 could never reach an instruction boundary,
+`ss_mcu_frozen` never asserted, and since `ss_frozen` needs all three CPUs the
+park timed out. The park is executed BY the machine being held still. What may
+be held is only what the game observes but does not need in order to park:
+
+| | during park | during transfer |
+|---|---|---|
+| raster | held | held |
+| 68000 clock enables | run (they execute the monitors) | held |
+| MCU divider | runs (must reach a boundary) | held |
+| YM/OKI enables | held | held |
+
+This also means OSD pause and the savestate freeze are **not** the same signal,
+and M4 should not try to make them one.
+
+### Remaining: USP, and it is getting the RESET value
+
+With the skew gone, exactly one fx68k register still differs, at K=1:
+
+```
+USP(hi) A=0007  B=0008
+USP(lo) A=FFBA  B=0000      A = 0x0007FFBA,  B = 0x00080000
+```
+
+`0x00080000` is avspirit's **reset stack pointer**, straight from the reset
+vector. B is not getting a slightly wrong USP; it is getting the power-on
+value, as though the restore never reached it.
+
+An earlier note here dismissed USP on the grounds that A held `FFBA` constant
+across K=1..3, so the game never left supervisor mode. At K=4 it reads `FFAE`.
+It does change; three samples happened to agree and the inference was drawn
+from too little.
+
+The park module's decodes were then checked and are correct: the monitor's
+writes (`a[3:1]` = 0/1 SSP hi/lo, 2/3 USP hi/lo), its reads (`sel_code` /
+`sel_regs` split on `a[8]`, `regs_rd` on the same `a[3:1]`), and the savestate
+port (`ss_sel` 0..3 against image words 0x1D010..0x1D013). All agree with the
+monitor's `MON_BASE+0x100` / `+0x104`.
+
+**So inspection is exhausted and the next step is instrumentation**: expose
+`usp_reg` from the park module and log what it holds at four moments -- after
+the monitor's save write, after the image is streamed out, after the image is
+streamed back in, and as the monitor reads it on resume. That says which of the
+four steps loses the value, rather than which of them looks right.
 
 ### Found while chasing it: the park's acknowledge ate a game interrupt
 
