@@ -430,10 +430,16 @@ module ms1_sound (
 	wire signed [21:0] pcm2   = ($signed(oki2_snd) <<< 2) * 22'sd5;
 	wire signed [21:0] mix_l  = (fm_l + pcm1 + pcm2) >>> 4;
 	wire signed [21:0] mix_r  = (fm_r + pcm1 + pcm2) >>> 4;
-	assign snd_l = (mix_l >  22'sd32767) ?  16'sd32767 :
-	               (mix_l < -22'sd32768) ? -16'sd32768 : mix_l[15:0];
-	assign snd_r = (mix_r >  22'sd32767) ?  16'sd32767 :
-	               (mix_r < -22'sd32768) ? -16'sd32768 : mix_r[15:0];
+	// The clamp rails are written as bit patterns, not as signed decimals:
+	// -16'sd32768 is a 16-bit signed literal holding a value that does not fit
+	// in 16 bits, which Quartus reports as a constant overflow (Verilator says
+	// nothing). It happens to truncate to 0x8000 and negate back to 0x8000, so
+	// the old form was right by accident; these are the same two patterns said
+	// plainly.
+	assign snd_l = (mix_l >  22'sd32767) ? 16'sh7FFF :
+	               (mix_l < -22'sd32768) ? 16'sh8000 : mix_l[15:0];
+	assign snd_r = (mix_r >  22'sd32767) ? 16'sh7FFF :
+	               (mix_r < -22'sd32768) ? 16'sh8000 : mix_r[15:0];
 
 	fx68k u_scpu (
 		.clk(clk), .HALTn(1'b1), .extReset(snd_rst), .pwrUp(snd_rst),

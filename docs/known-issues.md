@@ -47,6 +47,12 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
 | MS1-37 | Nine arrays do not infer as RAM; the core does not fit | closed — every array now block RAM; registers 996504 -> 11630 |
 | MS1-38 | quartus_map catches the MS1-34 driver class that Verilator ignores | closed — run synthesis as a linter from M1, not at M4 |
+| MS1-39 | Four OSD features have no core port, so the top level omits them | **OPEN** — M5 work: Pause, High Scores, Cheats, Flip Screen |
+| MS1-40 | The .mra's 2 MHz sample-clock bit is decoded but reaches nothing | **OPEN** — needs an `oki_hz` port on ms1_sound.sv |
+| MS1-41 | hayaosi1's three-player panel does not fit the pad or the .mra button list | **OPEN** — buttons 4/5 keyboard-only, player 3 unmapped |
+| MS1-42 | peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 | **OPEN** — moot until System D's memory map exists |
+| MS1-43 | The protection MCU is a multicycle island timed as if it ran at 48 MHz | closed — SDC multicycle 4; -13.703 ns -> +3.901 ns |
+| MS1-44 | The mode byte fans out further than any other signal and is timed as data | closed — reset tail + false path; -2.153 ns -> passing |
 
 ---
 
@@ -1223,3 +1229,155 @@ duplication, at 58 M10K.
 the framework, and docs/PLAN.md 4.C.4 records a silent cliff near 539/553 where
 Quartus stops inferring the framework's own RAMs with no message at all. The
 number to check is the total after `sys/` is added.
+
+---
+
+## MS1-39 — Four OSD features have no core port, so the top level omits them (OPEN)
+
+`MS1BCD.sv` was adapted from `Arcade-SandScrp_MiSTer/SandScrp.sv`, which wires
+Pause, High Scores, Cheats and Flip Screen into its core. `ms1bcd_core` has no
+port for any of them:
+
+| feature | what it needs |
+|---|---|
+| Pause | a clock-enable gate over both 68000s and the MCU |
+| High Scores | a work-RAM back door (`hs_addr`/`hs_din`/`hs_dout`/`hs_write`/`hs_access`) |
+| Cheats | the same back door, shared with hiscore |
+| Flip Screen | an `osd_flip` input mirroring the video readback coordinates |
+
+They are **absent from the CONF_STR**, not wired to constants. An OSD entry
+that does nothing is worse than no entry: it reads as a core that is broken
+rather than one that is unfinished.
+
+This is M5 work, and it is not free — see the M10K figure in the bring-up
+record. `rtl/third_party/hiscore/hiscore.v` and `rtl/cheats.sv` are both still
+in the tree, unreferenced, ready for it.
+
+## MS1-40 — The .mra's 2 MHz sample-clock bit is decoded but reaches nothing (OPEN)
+
+The game-mode byte's bit 4 says the OKIM6295s run at 2 MHz rather than 4, and
+`tools/gen_ms1bcd_mra.py` sets it for `hayaosi1`, `peekaboo` and `peekaboou`.
+`MS1BCD.sv` decodes it into `oki_2mhz` and stops there: `ms1_sound.sv` divides
+48 MHz by 12 unconditionally, which is the 4 MHz case.
+
+The decode is kept rather than dropped because the .mra already carries the
+bit and the byte is only comprehensible read whole. Quartus reports
+`oki_2mhz` as assigned but never read, which is the intended reminder.
+
+Why those three sets run at 2 MHz at all is MS1-8, which MAME does not answer
+either ("unknown OSC + divider combo").
+
+## MS1-41 — hayaosi1's three-player panel does not fit the pad or the .mra button list (OPEN)
+
+`hayaosi1` is a quiz cabinet, not a game with a joystick. Its `P1` and `P2`
+ports carry no directions at all: they are eight buttons each, interleaved
+across three players (buttons 1-5 per player, MAME
+`INPUT_PORTS_START(hayaosi1)`), and `SYSTEM` has a START3.
+
+Two things do not stretch that far:
+
+- **The .mra's `<buttons>` list has five names** (Button 1-3, Start, Coin),
+  which `tools/gen_ms1bcd_mra.py` writes for every set, so the pad reaches
+  buttons 1-3 only. Buttons 4 and 5 are on the keyboard for player 1 (Left
+  Shift and Z, MAME's own defaults) and unbound for players 2 and 3.
+- **Only `joystick_0` and `joystick_1` are taken**, so player 3 has no pad.
+  START3 is on the keyboard's 3 key.
+
+The layout is selected without any new .mra field: `hayaosi1` is the only
+System B set with simulated protection, so `mode == B && prot == 1` names it
+exactly (`chimeraba` is the other `iosim` set and is System C).
+
+Fixing it properly means a per-set button list in the generator and a third
+joystick, which is a .mra change and a CONF_STR change, not a top-level one.
+
+## MS1-42 — peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 (OPEN)
+
+`peekaboo` puts its four buttons in the HIGH byte of a 16-bit SYSTEM port
+(MAME `0x0100`-`0x2000`), and `ms1_iomcu.sv`'s port mux is eight bits wide.
+`MS1BCD.sv` maps the low byte -- the four coin inputs and the two starts --
+and the buttons are unreachable.
+
+Its `P1` is not a joystick either but an 8-bit PADDLE, `PORT_MINMAX(0x18,0xE0)`.
+That one *is* wired, from `hps_io`'s `paddle_0`, clamped to the same range.
+
+Both are moot until System D has a memory map: `mode == 2` currently falls
+into the `~is_c` branch in `ms1_main.sv`, which is System B's map, so
+`peekaboo` does not run at all yet (docs/PLAN.md 2.5).
+
+## MS1-43 — The protection MCU is a multicycle island timed as if it ran at 48 MHz (closed)
+
+The first fit of the real project failed timing at **-13.703 ns** on clk_sys,
+TNS -178.678, and every one of the twelve worst paths was the same pair:
+
+```
+tlcs90:u_cpu|val2[0]  ->  tlcs90:u_cpu|hl[8]
+```
+
+That path is about 34.5 ns, which is indeed hopeless against a 20.8 ns clock
+-- except that it never has to meet one. `rtl/tlcs90/tlcs90.sv` holds its
+**entire** datapath in a single
+
+```verilog
+always @(posedge clk) ... else if (cen) begin ... end
+```
+
+so every register in it advances only on `cen`, and `ms1_main.sv` drives that
+from `mdiv`: once every 4 clk_sys cycles on System C and every 6 on B and D.
+Both endpoints of the failing path are inside that block, so the path has 83.3
+ns, not 20.8.
+
+`JalecoMS1BCD.sdc` declares it, using 4 (the faster of the two modes):
+
+```tcl
+set tlcs_regs [get_registers {*|tlcs90:u_cpu|*}]
+set_multicycle_path -setup 4 -from $tlcs_regs -to $tlcs_regs
+set_multicycle_path -hold  3 -from $tlcs_regs -to $tlcs_regs
+```
+
+**`-from` matters as much as `-to`.** A path into the CPU from a register that
+is *not* cen-gated -- the ROM cache's `din`, for one -- still has only a single
+clk_sys period before the cen edge samples it. Writing `-to $tlcs_regs` alone
+would relax those too, and would be wrong.
+
+Nothing makes the gap shorter than 4: `mdiv` holds during a savestate park,
+which only makes cens rarer, and `mdiv_max` changes only while the core is in
+reset for the ROM download.
+
+## MS1-44 — The mode byte fans out further than any other signal and is timed as data (closed)
+
+With MS1-43 constrained, the next-worst paths were all
+
+```
+emu|dip_sw[2][1]  ->  tlcs90:u_cpu|val2[*]
+```
+
+at **-2.153 ns**. `dip_sw[2][1:0]` is `mode`, and it reaches further than
+anything else in this design: the System B/C memory map, the main CPU and MCU
+dividers, the layer geometry and the input layout all branch on it.
+
+It is configuration, not data -- but only *just*. Every write to `dip_sw` is
+gated on `ioctl_download`, and the old `reset` covered exactly
+`ioctl_download`, so the byte could take its final value on the last cycle of
+the transfer and the core could leave reset on the next one. A 34 ns fan-out
+with one 20.8 ns cycle to settle is a real hazard, not a constraint artefact.
+
+So the fix is in **both** files, and the RTL half comes first:
+
+```verilog
+reg [7:0] dl_tail = 8'hFF;
+always @(posedge clk_sys) begin
+	if (ioctl_download)        dl_tail <= 8'd0;
+	else if (dl_tail != 8'hFF) dl_tail <= dl_tail + 8'd1;
+end
+wire dl_settling = (dl_tail != 8'hFF);
+```
+
+255 clk_sys cycles is 5.3 us. Only with that tail in `reset` is
+
+```tcl
+set_false_path -from [get_registers {*|dip_sw[*][*]}]
+```
+
+a true statement rather than a wish. Changing a DIP in the OSD re-sends ioctl
+index 254 and therefore resets the game, which is how the sibling cores behave
+too.

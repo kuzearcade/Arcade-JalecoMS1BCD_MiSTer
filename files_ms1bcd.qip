@@ -1,0 +1,61 @@
+# Jaleco Mega System 1 B/C/D -- file list for the JalecoMS1BCD .rbf.
+# See docs/hw-bringup.md. Add files HERE, never through the Quartus IDE.
+#
+# The jt51 and jt6295 vendored cores are each tens of files deep, and this
+# design instantiates only jt51.v and jt6295.v directly. SEARCH_PATH lets
+# Quartus resolve the rest by matching module name to file name, the same
+# way Verilator's -y flag already does for every sim Makefile here.
+set_global_assignment -name SEARCH_PATH rtl/third_party/jt51/hdl
+set_global_assignment -name SEARCH_PATH rtl/third_party/jt6295/hdl
+
+# Top level and clocks
+set_global_assignment -name SYSTEMVERILOG_FILE MS1BCD.sv
+set_global_assignment -name VERILOG_FILE rtl/pll.v
+
+# Video output chain
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_retime.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/crt_adjust/rtl/crt_vsize.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/crt_adjust/rtl/crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/crt_chain.sv
+
+# The board
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ms1bcd/ms1bcd_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ms1bcd/ms1_main.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ms1bcd/ms1_sound.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ms1bcd/ms1bcd_rom_hw.sv
+
+# Jaleco custom chips and the video pipeline
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/jaleco/ms1_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/jaleco/ms1_tilemap.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/jaleco/ms1_sprites.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/jaleco/ms1_prio.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/jaleco/ms1_iomcu.sv
+
+# The protection MCU (Toshiba TMP91640)
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tlcs90/tlcs90.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tlcs90/tlcs90_periph_ref.sv
+
+# Savestates
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/savestate.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/savestate_ui.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/ss_m68k_park.sv
+
+# SDRAM controller, arbiters and ROM caches
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram_req.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram_arb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rom_cache1.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rom_cache1_byte.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rom_cache_n.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rom_cache_n_byte.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tile_prefetch_byte.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/oki_rom_cache.sv
+
+# CPUs and sound chips
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/fx68k/uaddrPla.sv
+set_global_assignment -name VERILOG_FILE rtl/third_party/jt51/hdl/jt51.v
+set_global_assignment -name VERILOG_FILE rtl/third_party/jt6295/hdl/jt6295.v
+
+set_global_assignment -name SDC_FILE JalecoMS1BCD.sdc
