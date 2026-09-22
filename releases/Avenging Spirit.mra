@@ -30,13 +30,13 @@
   <rom index="0" zip="avspirit.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="609f71fe" name="jaleco_a.spirit_6.3b" map="01"/>
-      <part crc="b26a341a" name="jaleco_a.spirit_5.5b" map="10"/>
+      <part crc="b26a341a" name="jaleco_a.spirit_5.5b" map="01"/>
+      <part crc="609f71fe" name="jaleco_a.spirit_6.3b" map="10"/>
     </interleave>
     <!-- audiocpu 0x040000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="30213390" name="jaleco_a.spirit_2.3f" map="01"/>
-      <part crc="d02ec045" name="jaleco_a.spirit_1.5f" map="10"/>
+      <part crc="d02ec045" name="jaleco_a.spirit_1.5f" map="01"/>
+      <part crc="30213390" name="jaleco_a.spirit_2.3f" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0C0000 -->
     <part crc="d9b2eb1a" name="avspirit-mcu.11l"/>

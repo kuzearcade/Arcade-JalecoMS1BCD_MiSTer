@@ -200,8 +200,24 @@ module ms1_main (
 	wire sel_ram  = b_ram  | c_ram;
 	wire sel_prot = b_prot | c_prot;
 
-	// ROM word index: B's second bank continues the same region at +0x40000
-	assign rom_addr = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
+	// ROM word index: B's second bank continues the same region at +0x40000.
+	//
+	// HELD while the bus is not selecting ROM. rom_cache_n refetches on any
+	// address change, so handing it the raw bus address makes every RAM, VRAM,
+	// palette or I/O access start a speculative SDRAM read whose fill can land
+	// between the 68000's DTACK sample and its data latch, corrupting the word
+	// the CPU is in the middle of reading.
+	//
+	// This is invisible to every simulation here -- the reference sim indexes
+	// an array, and the SDRAM model has no refresh -- and fatal on silicon:
+	// the first board test had both CPUs executing garbage, the main one
+	// wandering to 0x0FFFxx with vregw = 0 and vramw = 0, on a ROM image the
+	// golden-byte path had already proven correct. Sand Scorpion's SS-12 and
+	// NMK16's NMK-21 are the same bug, found the same way and fixed like this.
+	wire [18:0] rom_addr_live = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
+	reg  [18:0] rom_addr_held;
+	always @(posedge clk) if (sel_rom) rom_addr_held <= rom_addr_live;
+	assign rom_addr = sel_rom ? rom_addr_live : rom_addr_held;
 
 	// Hold the bus cycle until the program byte is actually there.
 	wire rom_stall = as_active & sel_rom & ~rom_ready;

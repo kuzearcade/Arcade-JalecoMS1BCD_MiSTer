@@ -171,7 +171,14 @@ module ms1_sound (
 	wire sel_oki2  = (a >= 24'h0C0000 && a < 24'h0C0004);
 	wire sel_ram   = (a >= 24'h0E0000 && a < 24'h100000);   // + mirror
 
-	assign rom_addr = a[17:1];
+	// Held while the bus is not selecting ROM, for the reason in ms1_main.sv:
+	// a cache that refetches on any address change turns every RAM, latch or
+	// sound-chip access into a speculative SDRAM read that can corrupt the
+	// word this CPU is reading. Same bug, same fix, same file to blame.
+	wire [16:0] rom_addr_live = a[17:1];
+	reg  [16:0] rom_addr_held;
+	always @(posedge clk) if (sel_rom) rom_addr_held <= rom_addr_live;
+	assign rom_addr = sel_rom ? rom_addr_live : rom_addr_held;
 
 	reg [15:0] sram [0:32767];
 	wire [14:0] ram_i = a[15:1];

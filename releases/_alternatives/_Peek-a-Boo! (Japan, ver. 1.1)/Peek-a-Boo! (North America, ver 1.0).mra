@@ -30,8 +30,8 @@
   <rom index="0" zip="peekaboou.zip|peekaboo.zip" md5="none">
     <!-- maincpu 0x040000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="7bf4716b" name="pb92127a_2_ver1.0.ic28" map="01"/>
-      <part crc="4603176a" name="pb92127a_3_ver1.0.ic29" map="10"/>
+      <part crc="4603176a" name="pb92127a_3_ver1.0.ic29" map="01"/>
+      <part crc="7bf4716b" name="pb92127a_2_ver1.0.ic28" map="10"/>
     </interleave>
     <!-- mcu 0x004000 @ 0x040000 -->
     <part crc="9dfba11b" name="mo-92033.mcu.ic120"/>

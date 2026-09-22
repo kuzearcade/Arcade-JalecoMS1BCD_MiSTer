@@ -54,6 +54,11 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-43 | The protection MCU is a multicycle island timed as if it ran at 48 MHz | closed — SDC multicycle 4; -13.703 ns -> +3.901 ns |
 | MS1-44 | The mode byte fans out further than any other signal and is timed as data | closed — reset tail + false path; -2.153 ns -> passing |
 | MS1-45 | The sound harness stopped building, then stopped running, and said neither | closed — two stale inputs; ym=0 looked like healthy silence |
+| MS1-46 | Two .mra names contain a colon, which no FAT filesystem accepts | closed — generator sanitises; tar had half-installed the tree |
+| MS1-47 | MiSTer never sends an empty `<switches>` block, so the mode byte never arrives | **OPEN** — needs real `<dip>` entries; mode read 3 and every ROM base fell through to System D |
+| MS1-48 | A failed Quartus compile leaves the previous .rbf and reports through a zero exit | closed — build.sh greps the log, not the exit code |
+| MS1-49 | The .mra shipped the 68000 image byte-swapped, and --check validated it against itself | closed — MEASURED on hardware; my first diagnosis had it backwards |
+| MS1-50 | Both 68000s handed the ROM cache their raw bus address | closed — held while the bus is not selecting ROM; SS-12 and NMK-21 are the same bug |
 
 ---
 
@@ -1434,3 +1439,149 @@ sees `ym=0` finds the explanation rather than repeating the bisect.
 **And it invalidates a date, not a result.** `docs/m2-gate34.md` records
 `avspirit 67204 / 67204` — that measurement was taken *before* M3 touched
 `ms1_sound.sv`. It has been re-run since this was fixed; see the note there.
+
+
+## MS1-50 — Both 68000s handed the ROM cache their raw bus address (closed)
+
+Found on the board, by being pointed at the sibling projects' notes. Sand
+Scorpion's SS-12 item 2 and NMK16's NMK-21 are the same bug:
+
+> `rom_cache_n` refetches on any address change, so handing it the raw bus
+> address makes every RAM, VRAM or I/O access start a speculative SDRAM read
+> whose fill can land between the 68000's DTACK sample and its data latch.
+
+Both of this core's CPUs did exactly that:
+
+```systemverilog
+assign rom_addr = b_rom1 ? {2'b10, a[17:1]} : a[19:1];   // ms1_main.sv
+assign rom_addr = a[17:1];                                // ms1_sound.sv
+```
+
+`a` is the raw bus address, so every work-RAM, VRAM, palette, object and I/O
+cycle started a speculative fetch on the program cache. The fix is the one
+those projects settled on -- hold the address whenever the bus is not
+selecting ROM:
+
+```systemverilog
+wire [18:0] rom_addr_live = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
+reg  [18:0] rom_addr_held;
+always @(posedge clk) if (sel_rom) rom_addr_held <= rom_addr_live;
+assign rom_addr = sel_rom ? rom_addr_live : rom_addr_held;
+```
+
+**Why no simulation here could see it.** The reference sim indexes a plain
+array, so a speculative address costs nothing. The hardware-path sim drives a
+`sdram_model` with no refresh, so a fill never lands late. The bug needs a real
+controller on real silicon, which is the gap SS-15 already named: *"the
+hardware path is verified in simulation" and "the hardware path is verified"
+are different claims.* Re-running the reference frame sim with and without the
+fix gives byte-identical results, which is the proof that it is a no-op
+everywhere except on a board -- `rom_data` is only consumed under `sel_rom`,
+and at the moment `sel_rom` rises the live address is muxed through
+combinationally, so nothing is delayed.
+
+This was a real bug and is fixed. It was **not**, on its own, enough to make
+the board draw: see MS1-51.
+
+
+## MS1-49 — The .mra shipped the 68000 image byte-swapped (closed, measured on hardware)
+
+**This entry was first written with the conclusion the wrong way round, and
+the correction is the point.**
+
+`gen_ms1bcd_mra.py` does two things: it writes the `.mra`, and `build_stream()`
+models the byte stream MiSTer will build from it. The two disagreed about
+which half of an `<interleave output="16">` pair supplies the even byte, and
+`--check` compares the `.mra`'s parts against that same model -- so it reported
+OK for all 17 sets while the shipped image was byte-swapped.
+
+**First diagnosis, from reading another project's .mra: wrong.** Sand
+Scorpion's working `.mra` puts MAME's offset-0 chip on `map="10"`, so I
+concluded `map="10"` supplies the even byte, that the model was inverted, and
+that the `.mra` was fine. That core stores its 68000 image with its own
+convention, so its map attributes say nothing about this one.
+
+**What settled it was the board.** With the golden-byte audit walking the
+sound region through the real cache:
+
+```
+snd word0 = 0x0F00   where the core needs 0x000F
+```
+
+a clean byte swap, with the offset-1 chip on `map="01"` at the time. So
+`map="01"` supplies the EVEN byte, the model was right, and the `.mra` was
+emitting the pair the wrong way round. The fix is in `parts_xml`: the
+**offset-0** chip goes on `map="01"`.
+
+Afterwards, on the same bitstream, with nothing changed but the `.mra`:
+
+| region | before | after | expected |
+|---|---|---|---|
+| sound word 0 | 0x0F00 | **0x000F** | 0x000F |
+| sound region sum | 0x242D | **0x42CA** | 0x42CA |
+| MCU region sum | 0xD4F1 | 0xD4F1 | 0xD4F1 |
+| non-black pixels | 0 | **3,154** | — |
+
+and `avspirit` went from a black screen to executing its own boot code and
+drawing text. `build_stream()` now also produces a stream byte-identical to
+`sim/rtl/ms1_hw/roms/avspirit_ioctl.bin`, which was generated by the separate
+`gen_ms1bcd_ioctl.py` and is what the hardware-path simulation was validated
+against -- two independent code paths agreeing, which is what docs/PLAN.md 1.5
+asks for and what `--check` alone could never establish.
+
+**The lesson is the one this project keeps relearning.** A self-referential
+check passes forever; a cross-check against an independently produced artefact
+does not. The sibling project's `.mra` looked like evidence and was not --
+only the measurement was.
+
+## MS1-51 — avspirit boots on hardware and traps in its own watchdog handler (OPEN)
+
+With MS1-49 (the byte-swapped 68000 image) and MS1-50 (the unheld cache
+address) fixed, `avspirit` runs on the board: the 68000 executes its own boot
+code, the tilemaps, palette and text layer all draw, and the protection MCU is
+answering (IRQ2 went from **1** to **3,634**).
+
+It then stops on the game's own diagnostic screen:
+
+```
+ERROR  TRAPED
+WATCH DOG  TIMER
+SP  +0  +2  +4  +6
++0 : 2104 0000 4274 0000
++8 : 1046 0000 001F 0020
+```
+
+and stays there indefinitely -- three screenshots 12 s apart are pixel-identical.
+MAME at the equivalent point is already showing the Jaleco logo
+(`sim/oracle/traces/avspirit/frames/f199.raw`), so this is a real divergence,
+not a boot screen the game always shows.
+
+**It is not the ROM data.** The golden-byte audit now walks all three CPU
+regions through the real caches and the real controller and every one matches
+a sum computed off-board from the `.mra` stream:
+
+| region | measured | expected |
+|---|---|---|
+| main 68000 | 0xE54D | 0xE54D |
+| sound 68000 | 0x42CA | 0x42CA |
+| MCU internal | 0xD4F1 | 0xD4F1 |
+
+(The audit's FIRST pass over the main region disagrees and its second agrees,
+every time. Port 0 carries the download as well as the main cache, and the
+first pass starts the moment the transfer ends. The instrument is unreliable
+there, the data is not -- which is exactly the distinction a second pass was
+added to make.)
+
+**What MAME says the mechanism is.** `megasys1.cpp`'s own notes describe a
+SOFTWARE watchdog: a word in work RAM incremented by the level-4 interrupt and
+cleared by the main loop, trapping when it passes 0xb. So the main loop is not
+getting round often enough, or level 4 is arriving too often. This core
+implements no watchdog of its own, hardware or software -- `grep -i watchdog`
+over `rtl/` finds nothing -- so nothing here resets the machine the way Sand
+Scorpion's SS-7 watchdog does; the game simply traps.
+
+**Next step**, and the instrument for it already exists: compare the per-frame
+IRQ1 / IRQ2 / IRQ4 counts on the board against the same counters in the
+reference simulation over the same span. The board currently shows IRQ2 at
+about 1.07 per display-enable edge (3,634 against 3,391), which is the first
+number to check against the sim rather than to reason about.

@@ -30,13 +30,13 @@
   <rom index="0" zip="chimeraba.zip|chimerab.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="4e66e630" name="chim2.bin" map="01"/>
-      <part crc="d3b83ca9" name="chim3.bin" map="10"/>
+      <part crc="d3b83ca9" name="chim3.bin" map="01"/>
+      <part crc="4e66e630" name="chim2.bin" map="10"/>
     </interleave>
     <!-- audiocpu 0x020000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="83b9982d" name="prg7.bin" map="01"/>
-      <part crc="a682b1ca" name="prg8.bin" map="10"/>
+      <part crc="a682b1ca" name="prg8.bin" map="01"/>
+      <part crc="83b9982d" name="prg7.bin" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0A0000 -->
     <!-- chimerab.mcu: undumped. Omitted; the core uses simulated protection. -->

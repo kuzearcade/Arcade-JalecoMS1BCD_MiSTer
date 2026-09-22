@@ -30,13 +30,13 @@
   <rom index="0" zip="monkelf.zip|avspirit.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="6c45465d" name="5" map="01"/>
-      <part crc="40b80914" name="6" map="10"/>
+      <part crc="40b80914" name="6" map="01"/>
+      <part crc="6c45465d" name="5" map="10"/>
     </interleave>
     <!-- audiocpu 0x040000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="30213390" name="3" map="01"/>
-      <part crc="d02ec045" name="4" map="10"/>
+      <part crc="d02ec045" name="4" map="01"/>
+      <part crc="30213390" name="3" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0C0000 -->
     <part repeat="0x4000">00</part>

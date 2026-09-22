@@ -31,13 +31,13 @@
   <rom index="0" zip="cybattlr.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="2ed14c50" name="cb_02.rom" map="01"/>
-      <part crc="bee20587" name="cb_03.rom" map="10"/>
+      <part crc="bee20587" name="cb_03.rom" map="01"/>
+      <part crc="2ed14c50" name="cb_02.rom" map="10"/>
     </interleave>
     <!-- audiocpu 0x020000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="85d219d7" name="cb_07.rom" map="01"/>
-      <part crc="bf7b3558" name="cb_08.rom" map="10"/>
+      <part crc="bf7b3558" name="cb_08.rom" map="01"/>
+      <part crc="85d219d7" name="cb_07.rom" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0A0000 -->
     <part crc="a72e04a7" name="mo-91028.mcu"/>

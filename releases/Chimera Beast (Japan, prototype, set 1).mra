@@ -30,13 +30,13 @@
   <rom index="0" zip="chimerab.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="821dbb85" name="prg2.bin" map="01"/>
-      <part crc="70f1448f" name="prg3.bin" map="10"/>
+      <part crc="70f1448f" name="prg3.bin" map="01"/>
+      <part crc="821dbb85" name="prg2.bin" map="10"/>
     </interleave>
     <!-- audiocpu 0x020000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="83b9982d" name="prg7.bin" map="01"/>
-      <part crc="a682b1ca" name="prg8.bin" map="10"/>
+      <part crc="a682b1ca" name="prg8.bin" map="01"/>
+      <part crc="83b9982d" name="prg7.bin" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0A0000 -->
     <!-- mo-91028.mcu: MAME BAD_DUMP, a documented substitution; shipped as the best available data. -->

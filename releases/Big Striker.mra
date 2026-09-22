@@ -30,14 +30,14 @@
   <rom index="0" zip="bigstrik.zip" md5="none">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
-      <part crc="2120f05b" name="91105v11.2" map="01"/>
-      <part crc="5d6e08ec" name="91105v11.3" map="10"/>
+      <part crc="5d6e08ec" name="91105v11.3" map="01"/>
+      <part crc="2120f05b" name="91105v11.2" map="10"/>
     </interleave>
     <part repeat="0x40000">00</part>
     <!-- audiocpu 0x020000 @ 0x080000 -->
     <interleave output="16">
-      <part crc="bc2c1508" name="91105v10.7" map="01"/>
-      <part crc="7dd69ece" name="91105v10.8" map="10"/>
+      <part crc="7dd69ece" name="91105v10.8" map="01"/>
+      <part crc="bc2c1508" name="91105v10.7" map="10"/>
     </interleave>
     <!-- iomcu 0x004000 @ 0x0A0000 -->
     <part crc="dbda258a" name="mo-91021.mcu"/>

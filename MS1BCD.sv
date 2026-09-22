@@ -473,6 +473,109 @@ wire [17:0] oki1_rom_addr, oki2_rom_addr;
 wire  [7:0] oki1_rom_data, oki2_rom_data;
 wire        oki1_stall, oki2_stall;
 wire  [8:0] prom_addr;     wire [7:0] prom_data;
+wire [31:0] dbg_dl_bytes, dbg_prom_bytes;
+
+// ---------------------------------------------------------------------------
+// BRING-UP: the golden-byte audit, driven from here.
+//
+// dbg_dl_bytes counts what the core ACCEPTED from the loader, which is not the
+// same as what the SDRAM stored or what the cache will hand back. This walks
+// the main 68000 region and the MCU's internal ROM through the REAL caches and
+// the REAL controller -- the same path the CPU uses -- and sums what comes
+// back, so the sum can be compared against one computed off-board from the
+// .mra stream. rom_hw's own comment records this instrument catching a bad
+// word at address 0 once before.
+//
+// The core is held in reset for the whole walk (see the core's reset below),
+// which is what lets rom_hw mux the audit address in without fighting it.
+// ---------------------------------------------------------------------------
+localparam DBG_AUDIT = 1;
+wire [15:0] audit_data;
+wire        audit_ready;
+reg         aud_en   = 1'b0;
+reg   [3:0] aud_sel  = 4'd0;
+reg  [23:0] aud_addr = 24'd0;
+reg  [31:0] aud_main = 32'd0, aud_mcu = 32'd0;
+reg  [15:0] aud_w0 = 0, aud_w1 = 0, aud_w2 = 0, aud_w3 = 0;
+reg  [31:0] aud_snd = 32'd0;
+reg  [15:0] aud_sw0 = 0;
+reg   [2:0] aud_rdy_n = 3'd0;
+reg  [31:0] aud_main2 = 32'd0;
+reg  [15:0] aud_wm = 0;
+reg         aud_pass2 = 1'b0;
+reg   [2:0] aud_st   = 3'd0;
+reg   [7:0] aud_dly  = 8'd0;
+reg  [15:0] aud_tmo  = 16'd0;
+reg         aud_done = 1'b0;
+always @(posedge clk_sys) begin
+	case (aud_st)
+	3'd0: begin   // wait for the loader to finish and the controller to come up
+		if (DBG_AUDIT && !ioctl_download && !dl_settling && sdram_ready && !aud_done) begin
+			aud_en <= 1'b1; aud_sel <= 4'd0; aud_addr <= 24'd0;
+			aud_dly <= 8'd0; aud_tmo <= 16'd0; aud_st <= 3'd1;
+		end
+	end
+	3'd1: begin   // let the new address propagate before believing `ready`
+		// 7 cycles was not enough to trust, and worse, it was not REPRODUCIBLE:
+		// two builds of the same design gave different main-region sums, which
+		// is the signature of sampling a hit signal that has not settled. 31
+		// cycles of settle, and `ready` must then be continuously high for 4
+		// more before the word is taken.
+		if (aud_dly == 8'd31) begin aud_st <= 3'd2; aud_rdy_n <= 3'd0; end
+		else aud_dly <= aud_dly + 1'd1;
+		aud_tmo <= 16'd0;
+	end
+	3'd2: begin   // wait for the cache, then take the word
+		aud_tmo <= aud_tmo + 1'd1;
+		if (audit_ready) aud_rdy_n <= (aud_rdy_n == 3'd4) ? 3'd4 : aud_rdy_n + 1'd1;
+		else             aud_rdy_n <= 3'd0;
+		if (aud_rdy_n == 3'd4 || aud_tmo == 16'hFFFF) begin
+			if (aud_sel == 4'd1) begin
+				aud_snd <= aud_snd + {16'd0, audit_data};
+				if (aud_addr == 24'd0) aud_sw0 <= audit_data;
+			end else if (aud_sel == 4'd0 && aud_pass2) begin
+				aud_main2 <= aud_main2 + {16'd0, audit_data};
+			end else if (aud_sel == 4'd0) begin
+				aud_main <= aud_main + {16'd0, audit_data};
+				if (aud_addr == 24'h001000) aud_wm <= audit_data;
+				// The first four words of the main region, kept verbatim. A
+				// checksum says "wrong" but not "how"; these have known values
+				// -- avspirit's reset vector is SP 0x00080000, PC 0x000006B2,
+				// so words 0..3 must read 0008 0000 0000 06B2.
+				case (aud_addr[1:0])
+					2'd0: if (aud_addr[23:2] == 22'd0) aud_w0 <= audit_data;
+					2'd1: if (aud_addr[23:2] == 22'd0) aud_w1 <= audit_data;
+					2'd2: if (aud_addr[23:2] == 22'd0) aud_w2 <= audit_data;
+					2'd3: if (aud_addr[23:2] == 22'd0) aud_w3 <= audit_data;
+				endcase
+			end else begin
+				aud_mcu  <= aud_mcu  + {24'd0, audit_data[7:0]};
+			end
+			aud_dly <= 8'd0;
+			// main: 0x80000 bytes = 0x40000 words. MCU: 0x4000 bytes.
+			if (aud_sel == 4'd0 && aud_addr == 24'h03FFFF && !aud_pass2) begin
+				// Walk main a SECOND time. If the two passes agree with each
+				// other but not with the expected sum, the data is wrong; if
+				// they disagree, this instrument is and nothing it says about
+				// the main region can be trusted.
+				aud_pass2 <= 1'b1; aud_addr <= 24'd0; aud_st <= 3'd1;
+			end else if (aud_sel == 4'd0 && aud_addr == 24'h03FFFF) begin
+				aud_sel <= 4'd1; aud_addr <= 24'd0; aud_st <= 3'd1;
+			end else if (aud_sel == 4'd1 && aud_addr == 24'h01FFFF) begin
+				aud_sel <= 4'd2; aud_addr <= 24'd0; aud_st <= 3'd1;
+			end else if (aud_sel == 4'd2 && aud_addr == 24'h003FFF) begin
+				aud_en <= 1'b0; aud_done <= 1'b1; aud_st <= 3'd3;
+			end else begin
+				aud_addr <= aud_addr + 1'd1; aud_st <= 3'd1;
+			end
+		end
+	end
+	default: ;   // done; the core is released
+	endcase
+end
+wire [31:0] dbg_irq2, dbg_int1e, dbg_mcuacc, dbg_vregw, dbg_vramw, dbg_romwait, dbg_romacc;
+wire [23:0] tr_addr;  wire tr_valid;
+wire [15:0] dbg_active;
 
 ms1bcd_rom_hw rom_hw (
 	.clk(clk_sys),
@@ -494,7 +597,8 @@ ms1bcd_rom_hw rom_hw (
 	.oki1_stall(oki1_stall), .oki2_stall(oki2_stall),
 	.prom_addr(prom_addr), .prom_data(prom_data),
 	// The golden-byte audit is a bring-up instrument, not a runtime feature.
-	.audit_en(1'b0), .audit_sel(4'd0), .audit_addr(24'd0), .audit_data(), .audit_ready(),
+	.audit_en(aud_en), .audit_sel(aud_sel), .audit_addr(aud_addr),
+	.audit_data(audit_data), .audit_ready(audit_ready),
 	.sdram_addr0(sd0_addr), .sdram_addr1(sd1_addr), .sdram_addr2(sd2_addr), .sdram_addr3(sd3_addr),
 	.sdram_wrl0(sd0_wrl), .sdram_wrl1(sd1_wrl), .sdram_wrl2(sd2_wrl), .sdram_wrl3(sd3_wrl),
 	.sdram_wrh0(sd0_wrh), .sdram_wrh1(sd1_wrh), .sdram_wrh2(sd2_wrh), .sdram_wrh3(sd3_wrh),
@@ -503,7 +607,7 @@ ms1bcd_rom_hw rom_hw (
 	.sdram_pair0(sd0_pair), .sdram_pair1(sd1_pair), .sdram_pair2(sd2_pair), .sdram_pair3(sd3_pair),
 	.sdram_req0(sd0_req), .sdram_req1(sd1_req), .sdram_req2(sd2_req), .sdram_req3(sd3_req),
 	.sdram_ack0(sd0_ack), .sdram_ack1(sd1_ack), .sdram_ack2(sd2_ack), .sdram_ack3(sd3_ack),
-	.dbg_dl_bytes(), .dbg_prom_bytes()
+	.dbg_dl_bytes(dbg_dl_bytes), .dbg_prom_bytes(dbg_prom_bytes)
 );
 
 // ---------------------------------------------------------------------------
@@ -564,7 +668,7 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	.clk(clk_sys),
 	// The CPUs are held in reset for the whole download and until the SDRAM
 	// controller is up, so no cache can be asked for a byte that is not there.
-	.reset(reset | ~sdram_ready),
+	.reset(reset | ~sdram_ready | aud_en),
 	.mode(mode),
 
 	.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
@@ -595,12 +699,12 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	.rgb(core_rgb), .rgb_valid(),
 	.vblank_rise(), .vcount_o(vcount_core), .hcount_o(hcount_core), .ce_pix_o(ce_pix_core),
 
-	.dbg_active(), .dbg_t0c(), .dbg_t1c(), .dbg_t2c(),
+	.dbg_active(dbg_active), .dbg_t0c(), .dbg_t1c(), .dbg_t2c(),
 	.dbg_t0x(), .dbg_t0y(), .dbg_t1x(), .dbg_t1y(), .dbg_t2x(), .dbg_t2y(),
 	.dbg_sf(), .dbg_sb(), .dbg_scf(),
-	.dbg_acc(), .dbg_vregw(), .dbg_vramw(),
-	.tr_addr(), .tr_data(), .tr_we(), .tr_valid(),
-	.dbg_irq2(), .dbg_int1e(), .dbg_mcuacc(), .dbg_mcubank(),
+	.dbg_acc(), .dbg_vregw(dbg_vregw), .dbg_vramw(dbg_vramw),
+	.tr_addr(tr_addr), .tr_data(), .tr_we(), .tr_valid(tr_valid),
+	.dbg_irq2(dbg_irq2), .dbg_int1e(dbg_int1e), .dbg_mcuacc(dbg_mcuacc), .dbg_mcubank(),
 
 	.ss_freeze(ss_freeze), .ss_resume(ss_resume), .ss_active(ss_active),
 	.ss_addr(ss_addr), .ss_wr(ss_wr), .ss_wdata(ss_wdata), .ss_rdata(ss_rdata),
@@ -608,7 +712,7 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	.ss_replay(ss_replay), .ss_replay_done(ss_replay_done),
 	.ss_rst_dbg(4'd0),   // bisection aid; tied off in any real build
 
-	.dbg_romwait(), .dbg_romacc(),
+	.dbg_romwait(dbg_romwait), .dbg_romacc(dbg_romacc),
 	.dbg_l0_miss(), .dbg_l1_miss(), .dbg_l2_miss(), .dbg_pix(),
 	.dbg_l2_first_v(), .dbg_l2_first_h(),
 	.dbg_spr_pass_cycles(), .dbg_spr_late_swaps(),
@@ -689,6 +793,125 @@ crt_chain #(
 	.hs_out(vm_hs), .vs_out(vm_vs), .hb_out(vm_hb), .vb_out(vm_vb)
 );
 
+// ------------------------------------------------------------------
+// BRING-UP OVERLAY (DBG_OVERLAY = 1). Sixteen squares along the top of the
+// picture, lit = true. It is drawn HERE, on clk_vid, after crt_chain -- not
+// in the core -- so it renders even if clk_sys is dead or the core is held
+// in reset, which is exactly the case it has to be able to report.
+//
+// Set DBG_OVERLAY to 0 for a shipping build.
+//
+//   0  pll_locked            8  mode[0]
+//   1  sdram_ready           9  mode[1]
+//   2  ioctl_download seen  10  clk_sys is toggling
+//   3  ioctl_download now   11  the core's raster is advancing
+//   4  any ROM byte taken   12  the core drew a non-black pixel
+//   5  >1 MB taken          13  the main 68000 asked for a ROM word
+//   6  any PROM byte taken  14  reset
+//   7  switches seen (254)  15  sdram_ready has EVER been low
+// ------------------------------------------------------------------
+localparam DBG_OVERLAY = 0;   // 1 paints the bring-up overlay over the top 144 lines
+
+// clk_sys liveness and core liveness, carried into clk_vid by toggle flags.
+reg [20:0] dbg_syscnt = 0;
+always @(posedge clk_sys) dbg_syscnt <= dbg_syscnt + 1'd1;
+reg  dbg_rast = 1'b0;
+always @(posedge clk_sys) if (vcount_core == 9'd100 && hcount_core == 9'd0) dbg_rast <= ~dbg_rast;
+// Where is the 68000? tr_addr is the address of every bus cycle, far too fast
+// to read off a screen, so it is sampled about four times a second and also
+// kept as a high-water mark. A loop shows up as a sample that keeps landing in
+// the same small range.
+reg [23:0] dbg_pc_slow = 24'd0, dbg_pc_max = 24'd0;
+reg [23:0] dbg_pc_div  = 24'd0;
+always @(posedge clk_sys) begin
+	dbg_pc_div <= dbg_pc_div + 1'd1;
+	if (tr_valid && tr_addr > dbg_pc_max) dbg_pc_max <= tr_addr;
+	if (dbg_pc_div == 24'd0 && tr_valid) dbg_pc_slow <= tr_addr;
+end
+
+reg  dbg_rom_seen = 1'b0;   // NOT dbg_romacc: that name is the core's own
+                            // 32-bit counter, wired in above.
+always @(posedge clk_sys) if (rom_addr != 19'd0) dbg_rom_seen <= 1'b1;
+reg  dbg_pix_seen = 1'b0;
+always @(posedge clk_sys) if (ce_pix_core && core_rgb != 24'd0) dbg_pix_seen <= 1'b1;
+reg  dbg_dl_seen = 1'b0, dbg_sw_seen = 1'b0, dbg_sd_wasdown = 1'b0;
+always @(posedge clk_sys) begin
+	if (ioctl_download) dbg_dl_seen <= 1'b1;
+	if (ioctl_download && ioctl_wr && ioctl_index == 16'd254) dbg_sw_seen <= 1'b1;
+	if (~sdram_ready) dbg_sd_wasdown <= 1'b1;
+end
+
+// Two-flop synchronisers into clk_vid, and edge detection for the toggles.
+reg [1:0] sy_sys, sy_rast;
+reg       sy_sys_d, sy_rast_d;
+// The decay must outlast the slowest thing being watched. dbg_syscnt[20]
+// toggles every 21.8 ms at 48 MHz and the raster flag every 17.8 ms; a 255
+// clk_vid decay is 2.7 us, so the first version of this reported both as dead
+// while the download and the 68000's ROM reads proved clk_sys was fine. 2^24
+// clk_vid is 0.17 s, comfortably longer than either.
+reg [23:0] sys_alive, rast_alive;   // saturating "seen a toggle recently"
+always @(posedge clk_vid) begin
+	sy_sys  <= {sy_sys[0],  dbg_syscnt[20]};
+	sy_rast <= {sy_rast[0], dbg_rast};
+	sy_sys_d  <= sy_sys[1];
+	sy_rast_d <= sy_rast[1];
+	if (sy_sys[1]  != sy_sys_d)  sys_alive  <= 24'hFFFFFF; else if (|sys_alive)  sys_alive  <= sys_alive  - 1'd1;
+	if (sy_rast[1] != sy_rast_d) rast_alive <= 24'hFFFFFF; else if (|rast_alive) rast_alive <= rast_alive - 1'd1;
+end
+
+wire [15:0] dbg_bits = {
+	dbg_sd_wasdown, reset, dbg_rom_seen, dbg_pix_seen,
+	|rast_alive, |sys_alive, mode[1], mode[0],
+	dbg_sw_seen, (dbg_prom_bytes != 0), (dbg_dl_bytes > 32'd1000000), (dbg_dl_bytes != 0),
+	aud_done, dbg_dl_seen, sdram_ready, pll_locked
+};
+
+// Pixel coordinates on the crt_chain output, from its own blanking.
+reg [9:0] dbg_x = 0, dbg_y = 0;
+reg       vm_hb_d = 1'b1;
+always @(posedge clk_vid) begin
+	if (vm_ce_pix) begin
+		vm_hb_d <= vm_hb;
+		if (vm_hb) dbg_x <= 10'd0;
+		else       dbg_x <= dbg_x + 1'd1;
+		if (vm_vb)              dbg_y <= 10'd0;
+		else if (vm_hb & ~vm_hb_d) dbg_y <= dbg_y + 1'd1;
+	end
+end
+// Nine rows of sixteen cells. Row 0 is the status bits above; the rest are
+// the core's own counters, MSB at the left, so "is it zero?" and "is it
+// counting?" are both readable from one screenshot.
+//
+//   1  main word0     (expect 0008)   4  main sum PASS 2 (expect E54D)
+//   2  main word 0x1000 (expect 07BC)   5  snd sum lo      (expect 42CA)
+//   3  main sum PASS 1 (expect E54D)    6  mcuacc  7  irq2  8  int1e
+//
+// The MCU row is the control: it read back exactly right on the first try,
+// which is what says the download, the SDRAM and a byte-wide cache path are
+// all sound, and narrows a mismatch to the 16-bit paths.
+//
+// Status bit 3 is now "audit finished" (it was "a download is in progress").
+
+reg [15:0] dbg_row;
+always @(*) case (dbg_y[7:4])
+	4'd0: dbg_row = dbg_bits;
+	4'd1: dbg_row = aud_w0;
+	4'd2: dbg_row = aud_wm;
+	4'd3: dbg_row = aud_main[15:0];
+	4'd4: dbg_row = aud_main2[15:0];
+	4'd5: dbg_row = aud_snd[15:0];
+	4'd6: dbg_row = dbg_mcuacc[15:0];
+	4'd7: dbg_row = dbg_irq2[15:0];
+	4'd8: dbg_row = dbg_int1e[15:0];
+	default: dbg_row = 16'd0;
+endcase
+wire       dbg_in    = DBG_OVERLAY && (dbg_y < 10'd144) && (dbg_x < 10'd256);
+wire [3:0] dbg_idx   = 4'd15 - dbg_x[7:4];      // MSB at the left
+wire       dbg_gap   = (dbg_x[3:0] > 4'd12) || (dbg_y[3:0] > 4'd12);
+wire [23:0] dbg_rgb  = dbg_gap           ? 24'h000000 :
+                       dbg_row[dbg_idx]  ? 24'h00FF40 : 24'h400000;
+wire [23:0] mixer_rgb = dbg_in ? dbg_rgb : retimed_rgb;
+
 video_mixer #(.LINE_LENGTH(272), .HALF_DEPTH(0), .GAMMA(0)) video_mixer (
 	.CLK_VIDEO(CLK_VIDEO),
 	.ce_pix(vm_ce_pix),
@@ -696,7 +919,7 @@ video_mixer #(.LINE_LENGTH(272), .HALF_DEPTH(0), .GAMMA(0)) video_mixer (
 	.scandoubler(scandoubler_en),
 	.hq2x(fx == 3'd1),
 	.gamma_bus(vm_gamma_bus),
-	.R(retimed_rgb[23:16]), .G(retimed_rgb[15:8]), .B(retimed_rgb[7:0]),
+	.R(mixer_rgb[23:16]), .G(mixer_rgb[15:8]), .B(mixer_rgb[7:0]),
 	.HSync(vm_hs), .VSync(vm_vs), .HBlank(vm_hb), .VBlank(vm_vb),
 	.HDMI_FREEZE(1'b0), .freeze_sync(),
 	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),

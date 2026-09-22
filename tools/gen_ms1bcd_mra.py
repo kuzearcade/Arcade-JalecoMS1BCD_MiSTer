@@ -211,9 +211,9 @@ def parts_xml(setname):
         for p in avail:
             (pairs if p['form'] == 'LOAD16_BYTE' else singles).append(p)
         if pairs:
-            # ROM_LOAD16_BYTE: even offset = high byte on the 68000, so the
-            # odd-offset file goes on map="01" -- the same byte-parity rebuild
-            # the NMK16 and Sand Scorpion generators use.
+            # ROM_LOAD16_BYTE: even offset = high byte on the 68000, and
+            # map="01" is the EVEN byte of the output word (measured on the
+            # board -- see build_stream), so the OFFSET-0 file goes on map="01".
             by_off = {}
             for p in pairs:
                 by_off.setdefault(p['offset'] & ~1, {})[p['offset'] & 1] = p
@@ -221,8 +221,8 @@ def parts_xml(setname):
                 pr = by_off[off]
                 if 0 in pr and 1 in pr:
                     out.append('    <interleave output="16">\n')
-                    out.append(f'      <part crc="{pr[1]["crc"]}" name="{x(pr[1]["name"])}" map="01"/>\n')
-                    out.append(f'      <part crc="{pr[0]["crc"]}" name="{x(pr[0]["name"])}" map="10"/>\n')
+                    out.append(f'      <part crc="{pr[0]["crc"]}" name="{x(pr[0]["name"])}" map="01"/>\n')
+                    out.append(f'      <part crc="{pr[1]["crc"]}" name="{x(pr[1]["name"])}" map="10"/>\n')
                     out.append('    </interleave>\n')
                     used += pr[0]['length'] + pr[1]['length']
                 else:
@@ -325,7 +325,21 @@ def build_stream(setname, byname, bycrc, strict_names):
                 hi, lo = fetch(pr[0]), fetch(pr[1])
                 inter = bytearray()
                 for i in range(min(len(hi), len(lo))):
-                    inter += bytes((lo[i], hi[i]))     # map 01 first, then 10
+                    # MEASURED on hardware 2026-09-22, not inferred: the
+                    # map="01" part supplies the EVEN byte of the output word.
+                    # The board's golden-byte audit read the sound region's
+                    # word 0 back as 0x0F00 where the core needs 0x000F -- a
+                    # clean byte swap -- with the map="01" part being the
+                    # offset-1 chip at the time.
+                    #
+                    # An earlier reading of Sand Scorpion's .mra suggested the
+                    # opposite. That core stores its 68000 image with its own
+                    # convention, so its map attributes say nothing about this
+                    # one; the audit does.
+                    #
+                    # parts_xml below therefore puts the OFFSET-0 chip (the
+                    # 68000's high byte) on map="01", so `hi` IS the even byte.
+                    inter += bytes((hi[i], lo[i]))
                 buf += inter
             else:
                 buf += fetch(pr.get(0) or pr.get(1))
@@ -368,6 +382,26 @@ def cmd_layout():
             print(f'    localparam [23:0] BASE_{mode}_{rn.upper():9} = 24\'h{base:06X};   // 0x{size:06X}')
         print()
 
+# A MiSTer SD card is FAT32 or exFAT, and these characters cannot appear in a
+# name on either. The .mra's own <name> element keeps the real description --
+# this is only what the FILE is called.
+#
+# Two of these sets need it: "64th. Street: A Detective Story" and "E.D.F.:
+# Earth Defense Force". Without it, tar on the board fails with "Cannot mkdir:
+# Invalid argument" partway through unpacking and leaves the release tree half
+# installed (found on hardware 2026-09-22, MS1-46).
+#
+# The colon becomes "-" rather than " -", which is what the arcade collection
+# already on the test board does: MAME's "Puzzle & Action: Sando-R" is stored
+# there as "Puzzle & Action- Sando-R".
+FAT_FORBIDDEN = {':': '-', '/': '-', '\\': '-', '?': '', '*': '',
+                 '<': '', '>': '', '|': '-', '"': "'"}
+
+def fat_safe(desc):
+    out = ''.join(FAT_FORBIDDEN.get(c, c) for c in desc)
+    # FAT also refuses a trailing dot or space.
+    return out.rstrip('. ')
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--check', action='store_true')
@@ -395,10 +429,10 @@ def main():
         if setname in EXCLUDED:
             continue
         e = ROMDATA[setname]
-        fn = e['desc'].replace('/', '-').replace('?', '') + '.mra'
+        fn = fat_safe(e['desc']) + '.mra'
         if e['parent']:
             parent_desc = ROMDATA[e['parent']]['desc']
-            d = os.path.join(alt, '_' + parent_desc.replace('/', '-').replace('?', ''))
+            d = os.path.join(alt, '_' + fat_safe(parent_desc))
         else:
             d = RELEASES
         os.makedirs(d, exist_ok=True)
