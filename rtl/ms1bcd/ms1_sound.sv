@@ -161,6 +161,9 @@ module ms1_sound (
 
 	wire sel_rom   = (a < 24'h020000);
 	wire srom_stall = as_active & sel_rom & ~rom_ready;
+	reg  sas_d1;
+	always @(posedge clk) sas_d1 <= as_active;
+	wire sarr_wait = as_active & eRWn & sel_ram & ~sas_d1;
 	wire sel_latch = (a >= 24'h040000 && a < 24'h040002) ||
 	                 (a >= 24'h060000 && a < 24'h060002);
 	wire sel_ym    = (a >= 24'h080000 && a < 24'h080004);
@@ -174,6 +177,9 @@ module ms1_sound (
 	wire [14:0] ram_i = a[15:1];
 
 	wire ss_sram  = ss_active & (ss_addr[19:15] == 5'h02);   // 0x10000 32768
+	wire [14:0] sram_rd_i = ss_active ? ss_addr[14:0] : ram_i;
+	reg  [15:0] sram_q;
+	always @(posedge clk) sram_q <= sram[sram_rd_i];
 	wire ss_smisc = ss_active & (ss_addr[19:4]  == 16'h1D02); // 0x1D020
 	wire ss_spark = ss_active & (ss_addr[19:4]  == 16'h1D03); // 0x1D030
 	wire ss_ymsh  = ss_active & (ss_addr[19:8]  == 12'h1E0);  // 0x1E000 256
@@ -327,7 +333,7 @@ module ms1_sound (
 	always @* begin
 		if      (sel_mon)   iEdb = mon_data;   // the park monitor's overlay
 		else if (sel_rom)   iEdb = rom_data;
-		else if (sel_ram)   iEdb = sram[ram_i];
+		else if (sel_ram)   iEdb = sram_q;
 		else if (sel_latch) iEdb = latch_from_main;
 		else if (sel_ym)    iEdb = {8'h00, ym_dout};
 		// MAME's oki_status_r returns 0 unless m_ignore_oki_status is cleared
@@ -355,7 +361,7 @@ module ms1_sound (
 	// separate restore block is a multiple driver: Verilator accepts it
 	// silently, Quartus refuses to elaborate. See MS1-34.
 	always @(posedge clk) begin
-		if      (ss_sram)  ss_rdata <= sram[ss_addr[14:0]];
+		if      (ss_sram)  ss_rdata <= sram_q;
 		else if (ss_ymsh)  ss_rdata <= {8'd0, ymsh[ss_addr[7:0]]};
 		else if (ss_spark) ss_rdata <= ss_spark_rdata;
 		else if (ss_smisc) ss_rdata <= ss_smisc_rdata;
@@ -432,7 +438,7 @@ module ms1_sound (
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),
 		.oRESETn(oRESETn), .oHALTEDn(oHALTEDn),
-		.DTACKn(~(as_active & ~iack & ~srom_stall)), .VPAn(~iack),
+		.DTACKn(~(as_active & ~iack & ~srom_stall & ~sarr_wait)), .VPAn(~iack),
 		.BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
 		.IPL0n(~ipl[0]), .IPL1n(~ipl[1]), .IPL2n(~ipl[2]),
 		.iEdb(iEdb), .oEdb(oEdb), .eab(eab)

@@ -211,7 +211,7 @@ module ms1_main (
 	// clk_sys (8 MHz from 48), so this does not lengthen it.
 	reg  as_d1;
 	always @(posedge clk) as_d1 <= as_active;
-	wire arr_wait = as_active & eRWn & sel_ram & ~as_d1;
+	wire arr_wait = as_active & eRWn & (sel_ram | sel_pal | sel_vreg | sel_obj) & ~as_d1;
 	always @(posedge clk) begin
 		if (reset) begin dbg_romwait <= 32'd0; dbg_romacc <= 32'd0; end
 		else begin
@@ -232,8 +232,17 @@ module ms1_main (
 	// reads are synchronous; the real objection is the port count.
 	reg [15:0] wram  [0:32767];   // read by the CPU and the savestate
 	reg [15:0] wram_s[0:32767];   // read by the sprite buffer copy only
-	reg [15:0] pal  [0:1023];
-	reg [15:0] obj  [0:4095];
+	// TWO COPIES of the palette (docs/m4-video-array-plan.md).
+	// pal_v serves the video read, pal_c the CPU and the savestate -- which
+	// are mutually exclusive, since the core is parked while an image streams.
+	// One read and one write each, which is what an M10K can do.
+	reg [15:0] pal_v [0:1023];
+	reg [15:0] pal_c [0:1023];
+	// TWO COPIES of object RAM: obj_v is read by the buffer copy, obj_c by the
+	// CPU and the savestate. The copy sweep and the CPU run at the same time,
+	// so these two readers are genuinely concurrent.
+	reg [15:0] obj_v [0:4095];
+	reg [15:0] obj_c [0:4095];
 	reg [15:0] vr0  [0:8191];
 	reg [15:0] vr1  [0:8191];
 	reg [15:0] vr2  [0:8191];
@@ -285,16 +294,28 @@ module ms1_main (
 			if (ss_vr0)  vr0[ss_addr[12:0]]  <= ss_wdata;
 			if (ss_vr1)  vr1[ss_addr[12:0]]  <= ss_wdata;
 			if (ss_vr2)  vr2[ss_addr[12:0]]  <= ss_wdata;
-			if (ss_pal)  pal[ss_addr[9:0]]   <= ss_wdata;
+			if (ss_pal) begin
+				pal_v[ss_addr[9:0]] <= ss_wdata;
+				pal_c[ss_addr[9:0]] <= ss_wdata;
+			end
 			if (ss_vreg) vreg[ss_addr[8:0]]  <= ss_wdata;
-			if (ss_obj)  obj[ss_addr[11:0]]  <= ss_wdata;
+			if (ss_obj) begin
+				obj_v[ss_addr[11:0]] <= ss_wdata;
+				obj_c[ss_addr[11:0]] <= ss_wdata;
+			end
 		end else if (we) begin
 			if (sel_ram) begin
 				wram  [wram_i] <= ram_wdat;
 				wram_s[wram_i] <= ram_wdat;
 			end
-			if (sel_pal)  pal[pal_i]   <= wdat;
-			if (sel_obj)  obj[obj_i]   <= wdat;
+			if (sel_pal) begin
+				pal_v[pal_i] <= wdat;
+				pal_c[pal_i] <= wdat;
+			end
+			if (sel_obj) begin
+				obj_v[obj_i] <= wdat;
+				obj_c[obj_i] <= wdat;
+			end
 			if (sel_v0)   vr0[v_i]     <= wdat;
 			if (sel_v1)   vr1[v_i]     <= wdat;
 			if (sel_v2)   vr2[v_i]     <= wdat;
@@ -330,13 +351,13 @@ module ms1_main (
 		else if (ss_vr0)  ss_rdata <= vr0[ss_addr[12:0]];
 		else if (ss_vr1)  ss_rdata <= vr1[ss_addr[12:0]];
 		else if (ss_vr2)  ss_rdata <= vr2[ss_addr[12:0]];
-		else if (ss_pal)  ss_rdata <= pal[ss_addr[9:0]];
-		else if (ss_vreg) ss_rdata <= vreg[ss_addr[8:0]];
-		else if (ss_obj)  ss_rdata <= obj[ss_addr[11:0]];
-		else if (ss_ob1)  ss_rdata <= obj_b1[ss_addr[11:0]];
-		else if (ss_ob2)  ss_rdata <= obj_b2[ss_addr[11:0]];
-		else if (ss_sb1)  ss_rdata <= spr_b1[ss_addr[11:0]];
-		else if (ss_sb2)  ss_rdata <= spr_b2[ss_addr[11:0]];
+		else if (ss_pal)  ss_rdata <= pal_q;
+		else if (ss_vreg) ss_rdata <= vreg_q;
+		else if (ss_obj)  ss_rdata <= objc_q;
+		else if (ss_ob1)  ss_rdata <= ob1_q;
+		else if (ss_ob2)  ss_rdata <= ob2_q;
+		else if (ss_sb1)  ss_rdata <= sb1_q;
+		else if (ss_sb2)  ss_rdata <= sb2_q;
 		else if (ss_mcu)  ss_rdata <= ss_mcu_rdata;
 		else if (ss_park) ss_rdata <= ss_park_rdata;
 		else if (ss_misc) ss_rdata <= ss_misc_rdata;
@@ -352,6 +373,42 @@ module ms1_main (
 	reg  [15:0] wram_q;
 	always @(posedge clk) wram_q <= wram[wram_rd_i];
 
+	wire  [9:0] pal_rd_i = ss_active ? ss_addr[9:0] : pal_i;
+	reg  [15:0] pal_q;
+	always @(posedge clk) pal_q <= pal_c[pal_rd_i];
+
+	wire  [8:0] vreg_rd_i = ss_active ? ss_addr[8:0] : vreg_i;
+	reg  [15:0] vreg_q;
+	always @(posedge clk) vreg_q <= vreg[vreg_rd_i];
+
+	wire [11:0] objc_rd_i = ss_active ? ss_addr[11:0] : obj_i;
+	reg  [15:0] objc_q;
+	always @(posedge clk) objc_q <= obj_c[objc_rd_i];
+
+	// ---- the object/sprite buffer chain.
+	// Each of these arrays had TWO readers, the copy sweep and the savestate
+	// readback, so registering the copy read alone made three ports -- which
+	// is exactly why the first attempt at this cost four arrays their
+	// inference. One registered read each, address muxed, REPLACING both.
+	wire [11:0] cp_i   = bufi[11:0];
+	wire [11:0] ob1_ri = ss_active ? ss_addr[11:0] : cp_i;
+	wire [11:0] ob2_ri = ss_active ? ss_addr[11:0] : cp_i;
+	wire [11:0] sb1_ri = ss_active ? ss_addr[11:0] : cp_i;
+	wire [11:0] sb2_ri = ss_active ? ss_addr[11:0] : cp_i;
+	reg  [15:0] ob1_q, ob2_q, sb1_q, sb2_q, obj_q, wrms_q;
+	reg  [11:0] cp_i_d;
+	reg         cp_run;
+	always @(posedge clk) begin
+		ob1_q  <= obj_b1[ob1_ri];
+		ob2_q  <= obj_b2[ob2_ri];
+		sb1_q  <= spr_b1[sb1_ri];
+		sb2_q  <= spr_b2[sb2_ri];
+		obj_q  <= obj_v[cp_i];
+		wrms_q <= wram_s[15'h4000 + {3'd0, cp_i}];
+		cp_i_d <= cp_i;
+		cp_run <= buf_busy;
+	end
+
 	// ---- video read ports.
 	// COMBINATIONAL on purpose: ms1_tilemap and ms1_sprites register their
 	// ADDRESS and expect the data in the following cycle, which is the bus
@@ -363,8 +420,13 @@ module ms1_main (
 		v0_rd_data  = vr0[v0_rd_addr];
 		v1_rd_data  = vr1[v1_rd_addr];
 		v2_rd_data  = vr2[v2_rd_addr];
-		pal_rd_data = pal[pal_rd_addr];
 	end
+
+	// The palette read is REGISTERED, and on clk rather than on ce. The
+	// address only changes on a pixel enable, so the data is valid one clock
+	// later -- seven clocks before the next ce consumes it. No re-timing is
+	// needed; registering it on ce WOULD have cost a pixel.
+	always @(posedge clk) pal_rd_data <= pal_v[pal_rd_addr];
 
 	// ---- the two-deep object/sprite buffers
 	reg [15:0] obj_b1 [0:4095];
@@ -397,11 +459,15 @@ module ms1_main (
 			// arrays to two, because registering obj_b1/spr_b1 here gave each
 			// of them a second reader. One uninferred array is cheaper than
 			// four, so it is reverted. See MS1-37.
-			obj_b2[bufi[11:0]] <= obj_b1[bufi[11:0]];
-			obj_b1[bufi[11:0]] <= obj[bufi[11:0]];
-			spr_b2[bufi[11:0]] <= spr_b1[bufi[11:0]];
-			// sprite RAM is work RAM + 0x8000 BYTES, i.e. word 0x4000 upwards
-			spr_b1[bufi[11:0]] <= wram_s[15'h4000 + {3'd0, bufi[11:0]}];
+			// written from the registered reads above, one index behind, so
+			// every array here has exactly one read and one write
+			if (cp_run) begin
+				obj_b2[cp_i_d] <= ob1_q;
+				obj_b1[cp_i_d] <= obj_q;
+				spr_b2[cp_i_d] <= sb1_q;
+				// sprite RAM is work RAM + 0x8000 BYTES, i.e. word 0x4000 up
+				spr_b1[cp_i_d] <= wrms_q;
+			end
 			if (bufi == 13'd4095) buf_busy <= 1'b0;
 			else bufi <= bufi + 13'd1;
 		end
@@ -475,12 +541,12 @@ module ms1_main (
 		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
 		else if (sel_rom)  rdat = rom_data;
 		else if (sel_ram)  rdat = wram_q;
-		else if (sel_pal)  rdat = pal[pal_i];
-		else if (sel_obj)  rdat = obj[obj_i];
+		else if (sel_pal)  rdat = pal_q;
+		else if (sel_obj)  rdat = objc_q;
 		else if (sel_v0)   rdat = vr0[v_i];
 		else if (sel_v1)   rdat = vr1[v_i];
 		else if (sel_v2)   rdat = vr2[v_i];
-		else if (sel_vreg) rdat = vreg[vreg_i];
+		else if (sel_vreg) rdat = vreg_q;
 		else if (sel_prot) rdat = {8'h00, prot_rd};
 		else               rdat = 16'h0000;
 	end

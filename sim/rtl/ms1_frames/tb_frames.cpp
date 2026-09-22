@@ -371,8 +371,8 @@ int main(int argc, char **argv) {
 				sn.v0   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr0, 8192);
 				sn.v1   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr1, 8192);
 				sn.v2   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr2, 8192);
-				sn.pal  = cp(R->ms1bcd_core__DOT__u_main__DOT__pal, 1024);
-				sn.obj  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj, 4096);
+				sn.pal  = cp(R->ms1bcd_core__DOT__u_main__DOT__pal_c, 1024);
+				sn.obj  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_c, 4096);
 				sn.spr  = cp(R->ms1bcd_core__DOT__u_main__DOT__spr_b2, 4096);
 				sn.ob1  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b1, 4096);
 				sn.ob2  = cp(R->ms1bcd_core__DOT__u_main__DOT__obj_b2, 4096);
@@ -611,7 +611,7 @@ int main(int argc, char **argv) {
 		DUMPARR("l0.vram", R->ms1bcd_core__DOT__u_main__DOT__vr0, 8192)
 		DUMPARR("l1.vram", R->ms1bcd_core__DOT__u_main__DOT__vr1, 8192)
 		DUMPARR("l2.vram", R->ms1bcd_core__DOT__u_main__DOT__vr2, 8192)
-		DUMPARR("palette.bin", R->ms1bcd_core__DOT__u_main__DOT__pal, 1024)
+		DUMPARR("palette.bin", R->ms1bcd_core__DOT__u_main__DOT__pal_c, 1024)
 		DUMPARR("objram.bin", R->ms1bcd_core__DOT__u_main__DOT__obj_b2, 4096)
 		DUMPARR("spriteram.bin", R->ms1bcd_core__DOT__u_main__DOT__spr_b2, 4096)
 		char rp[512]; snprintf(rp, sizeof rp, "%s/regs.txt", sd);

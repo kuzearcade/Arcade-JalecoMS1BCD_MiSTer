@@ -159,3 +159,59 @@ whole allocation (duplicate / register / restructure) **before** editing, and
 only then change the RTL -- with the frame comparison re-run after each step,
 since the video ones alter pipeline timing and M1 and M2 gate 2 are the only
 things that can show the re-timing is right.
+
+
+---
+
+## 2026-09-22 (later): twelve arrays inferred, six to go
+
+Synthesis now reports **Successful**, which is NOT the same as fitting. Error
+(276003) no longer fires, but the resource summary says:
+
+```
+Dedicated logic registers   996504      (device has about 83000)
+Combinational ALUTs         986368
+Block memory bits          1826561
+```
+
+Inferred as `altsyncram` (12): `wram`, `wram_s`, `pal_v`, `pal_c`, `obj_v`,
+`obj_c`, `obj_b1`, `obj_b2`, `spr_b1`, `spr_b2`, `sram`, `vreg`.
+
+**Still flip-flops (6)**: `vr0`, `vr1`, `vr2`, `plane`, `iram`, `ymsh`. Their
+bits come to 393216 + 589824 + 4096 + 2048 = 989184, which matches the reported
+register count almost exactly. The fitter would still fail.
+
+### The pattern that works, applied five times
+
+One registered read per copy, address muxed between readers that are mutually
+exclusive; duplicate only where readers are genuinely concurrent. Registering
+on `clk` rather than on `ce` is what makes it free: an address that only
+changes on a pixel enable has eight clocks of slack, so the data is valid one
+clock later and seven clocks before it is used. **No re-timing was needed
+anywhere**, and the `VRAM_LAT` / `vpipe` work this plan budgeted for did not
+have to happen.
+
+Frames were re-checked after every single step: 70 of 70 identical, 16 with
+content, every time.
+
+### Why the buffer chain failed the first time
+
+Each of `obj_b1`, `obj_b2`, `spr_b1`, `spr_b2` has two readers -- the copy
+sweep and the savestate readback. The first attempt registered the copy read
+and left the savestate read alone, making three ports, which is why four arrays
+LOST inference. Replacing both with one muxed registered read fixed all four,
+and `wram_s` with them.
+
+### Remaining
+
+| array | bits | readers |
+|---|---:|---|
+| `vr0`, `vr1`, `vr2` | 128K each | tilemap (comb), CPU (comb), savestate |
+| `plane` | 576K | sprite engine read-modify-write (comb), display readback, savestate |
+| `iram` | 4K | MCU (comb), savestate |
+| `ymsh` | 2K | replay mux (comb), savestate |
+
+`vr0`-`vr2` are the straightforward ones: the same split as `pal`, which is
+already proven. `plane` is the interesting one -- the sprite engine does a
+read-modify-write on it for first-writer-wins, so its read and write are in the
+same cycle at the same address, and it also has a display readback.
