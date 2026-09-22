@@ -106,3 +106,47 @@ at level 7 — neither MAME nor the core ever fetches the interrupt vector at
 `0x70`. Both event streams carry the absolute 48 MHz clock of MAME's write, so
 the replay lands on the same cycle; at frame granularity alone the reset
 arrived 651342 clocks late and left a constant 18-write offset.
+
+---
+
+## Re-verified 2026-09-22, against the RTL as it now stands
+
+Everything above was measured before M3 changed `ms1_sound.sv` — the HW_ROMS
+handshake and the sound CPU's park monitor both landed after it. The harness
+then stopped building, and when made to build it stopped running, and said
+neither (MS1-45), so nothing had re-checked these numbers since.
+
+Both gates were re-run with the harness fixed. `avspirit`, 2400 frames:
+
+```
+after 2400 frames: ym=67204 oki1=450 oki2=21  ymirq=28233 iack=0
+```
+
+Identical to MAME's own trace and to the table above: **67204 / 450 / 21**.
+
+Band correlation, same run:
+
+| source | mean band corr | level (MAME - core) |
+|---|---:|---:|
+| FM | 0.998 | -1.4 dB |
+| OKI #1 | 1.000 | +0.1 dB |
+| OKI #2 | 1.000 | -0.1 dB |
+| mix | 0.999 | +1.1 dB |
+
+Gate 4 asks for >= 0.95 per source. Both gates still hold.
+
+Invocation, since two of its inputs are not obvious and leaving either out
+produces a confident wrong answer:
+
+```
+cd sim/rtl/ms1_snd && make
+MS1_SRESET=../../oracle/traces/snd_avspirit/sreset.log \
+MS1_WAV=/tmp/rtl_avspirit \
+  ./obj_dir/Vms1_sound /tmp/gen_avspirit 0 2400 \
+     ../../oracle/traces/snd_avspirit/latch.log
+bash tools/run_audio_gate.sh avspirit
+```
+
+Without the latch log the sound CPU is given no commands and plays silence.
+Without `MS1_SRESET` it never sees the main CPU's reset line. Neither omission
+is reported as an error.

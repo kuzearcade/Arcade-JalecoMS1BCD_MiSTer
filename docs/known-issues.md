@@ -53,6 +53,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-42 | peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 | **OPEN** — moot until System D's memory map exists |
 | MS1-43 | The protection MCU is a multicycle island timed as if it ran at 48 MHz | closed — SDC multicycle 4; -13.703 ns -> +3.901 ns |
 | MS1-44 | The mode byte fans out further than any other signal and is timed as data | closed — reset tail + false path; -2.153 ns -> passing |
+| MS1-45 | The sound harness stopped building, then stopped running, and said neither | closed — two stale inputs; ym=0 looked like healthy silence |
 
 ---
 
@@ -1381,3 +1382,55 @@ set_false_path -from [get_registers {*|dip_sw[*][*]}]
 a true statement rather than a wish. Changing a DIP in the OSD re-sends ioctl
 index 254 and therefore resets the game, which is how the sibling cores behave
 too.
+
+## MS1-45 — The sound harness stopped building, then stopped running, and said neither (closed)
+
+Found while building the MiSTer top level, by trying to re-run the sound
+simulation to check an unrelated one-line change. Two independent breakages,
+stacked, each of which hid the other:
+
+**1. It had not compiled since M3.** `sim/rtl/ms1_snd/Makefile` was missing
+`-y $(RTL)/savestate`, and `ms1_sound.sv` gained `ss_m68k_park` in 5cba7f0.
+Verilator could not find the module and the build failed. Nobody saw it,
+because nothing re-runs this harness automatically.
+
+**2. Once it compiled, it ran and produced nothing.** M3 also gave the sound
+module the HW_ROMS handshake:
+
+```verilog
+wire srom_stall = as_active & sel_rom & ~rom_ready;
+```
+
+`tb_snd.cpp` predates that port and never drove it, so `rom_ready` sat at its
+zero default, `srom_stall` was permanently true, DTACK never asserted, and the
+sound 68000 never completed its first instruction fetch.
+
+**What it reported while doing this is the point.** Everything a person would
+check looked right:
+
+```
+latch commands: 15
+sreset transitions: 3
+after 2400 frames: ym=0 oki1=0 oki2=0  ymirq=0 iack=0
+per frame: phi1=124544 ym_cen=62272 ym_cen_p1=31136 (expect 124544 / 62272 / 31136)
+```
+
+The latch replay loaded. The sreset trace loaded. Every clock-enable count
+matched its expectation exactly — those are the MS1-28 counters, and they are
+derived from the divider, not from the CPU, so they are happy whether or not
+anything executes. 42.7 seconds of 48 kHz audio was written. The only wrong
+number was `ym=0`, against MAME's 67204, and a silent WAV is indistinguishable
+from a game that has not started making noise yet.
+
+**This is MS1-18 and MS1-27 again**: a harness that measures its own plumbing
+and passes. The lesson is the same one this project keeps relearning — a
+zero is a result and must be checked against an expectation, not read as
+"nothing has happened yet".
+
+The fix is three assignments in `tb_snd.cpp` and one flag in the `Makefile`.
+Both are committed with a comment naming the symptom, so the next person who
+sees `ym=0` finds the explanation rather than repeating the bisect.
+
+**And it invalidates a date, not a result.** `docs/m2-gate34.md` records
+`avspirit 67204 / 67204` — that measurement was taken *before* M3 touched
+`ms1_sound.sv`. It has been re-run since this was fixed; see the note there.

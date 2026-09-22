@@ -71,6 +71,18 @@ int main(int argc, char **argv) {
 	top->oki_status_real = getenv("MS1_OKI_STATUS_REAL") ? 1 : 0;
 	top->reset = 1; top->clk = 0; top->latch_we = 0; top->latch_data = 0;
 	top->sreset = 0;
+	// The HW_ROMS handshake, added to ms1_sound.sv with the SDRAM path (M3).
+	// This harness serves every ROM from an array with no latency, which is
+	// what rom_ready=1 and both OKI stalls low mean. Leaving them at their
+	// zero default makes srom_stall permanently true --
+	//
+	//     wire srom_stall = as_active & sel_rom & ~rom_ready;
+	//
+	// -- so DTACK never asserts, the sound 68000 never finishes its first
+	// instruction fetch, and the run reports ym=0 oki1=0 oki2=0 after any
+	// number of frames while looking otherwise healthy: the latch replay, the
+	// sreset trace and every clock-enable count are exactly right.
+	top->rom_ready = 1; top->oki1_stall = 0; top->oki2_stall = 0;
 
 	auto serve = [&]() {
 		unsigned ra = top->rom_addr * 2;
