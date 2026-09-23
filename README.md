@@ -13,41 +13,16 @@ memory map, video layout, interrupt model and I/O all follow from it.
 
 ## Goals
 
-- One core for every Mega System 1 B/C/D set, verified against MAME rather
-  than against the way it looks.
+- One core for every Mega System 1 B/C/D set, verified against MAME
 - **Every claim a measurement.** An entry in `docs/known-issues.md` is only
   closed by a number, never by reasoning. The simulation harnesses compare
   frames pixel-for-pixel with MAME captures, the 68000 bus against MAME's own
   trace, and every ROM byte through the real SDRAM controller and cache.
-- A shipped core: DIPs, savestates, high scores, cheats and CRT geometry, not
-  just a picture.
 
 ## Status
 
 **All 16 shipped sets boot and run on a DE10-Nano** — System B 7 of 7,
 System C 7 of 7, System D 2 of 2.
-
-| | |
-|---|---|
-| `peekaboo` vs MAME | **0 differing pixels** on every steady frame, on *both* the reference simulation and the SDRAM path |
-| `avspirit` SDRAM path vs reference sim | **70/70 frames identical** |
-| Bitstream | 69 % ALMs, 544 / 553 M10K, **0 timing violations** |
-
-Measured on the board, each judged by its effect on the picture: **DIP
-switches**, **Pause**, **Flip screen** (an exact 180-degree turn), **Cheats**
-(seven fixed slots, per-game addresses from the `.mra`) and **High Scores**,
-including the patch-the-`.nvm` proof that a dump reaches the game's work RAM.
-
-Present and wired, but *not* verified on hardware: CRT Adjust, Orientation,
-savestates, and **Autofire** for the three shoot-'em-up families via the
-`autofire_releases/` tree — the autofire menu's visibility in particular is
-not screenshot-testable, since MiSTer's capture omits the OSD overlay.
-
-Also not yet done: audio correlation against MAME on hardware and a full
-input sweep. Nine entries remain open in `docs/known-issues.md`, none of them
-blocking — the two that matter are MS1-31 (MAME's OKI status register returns
-0, a workaround MAME itself documents; only a PCB can settle it) and MS1-33
-(a savestate round trip leaves a 25-pixel residue).
 
 See `docs/PLAN.md` for the plan, `docs/hw-bringup.md` for build numbers and
 the bring-up log, and `docs/known-issues.md` for what is measured, what is
