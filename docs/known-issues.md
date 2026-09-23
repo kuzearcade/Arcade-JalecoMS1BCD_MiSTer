@@ -62,6 +62,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-51 | System B's second ROM bank was mapped one whole bank too far | closed — `{2'b10,...}` was word +0x40000 where the region wants word +0x20000 |
 | MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
 | MS1-53 | The core ran before the .mra's <switches> arrived, with `mode` at its idle 3 | closed — reset now waits for index 254, not for a fixed tail |
+| MS1-54 | The .mra's protection field reaches nothing: the core always runs the real MCU | **OPEN** — 5 of 7 System B sets boot on hardware; monkelf and hayaosi1 do not |
 
 ---
 
@@ -1789,3 +1790,73 @@ because this board's own `avspirit.zip` has no MCU in it.
 
 **Not verified:** that the OSD's DIP submenu renders and cycles correctly.
 That needs driving the OSD on the board and reading it back.
+
+
+## MS1-54 — The .mra's protection field reaches nothing (OPEN)
+
+Sweeping every System B set on the board, three screenshots each, 10 s apart,
+70 s after load:
+
+| set | protection | result |
+|---|---|---|
+| avspirit | mcu | attract runs |
+| edf | mcu | attract runs |
+| edfa | mcu | attract runs |
+| edfb | mcu | attract runs |
+| edfu | mcu | attract runs |
+| **monkelf** | **none** | **black, 3 identical frames** |
+| **hayaosi1** | **iosim** | **black, 3 identical frames** |
+
+The split is exactly the protection type: every `mcu` set works, neither of
+the others does.
+
+### Why
+
+Both failing sets ship a **zero-filled** MCU region, correctly:
+
+```xml
+<!-- iomcu 0x004000 @ 0x0C0000 -->
+<!-- mo-91044.mcu: undumped. Omitted; the core uses simulated protection. -->
+<part repeat="0x4000">00</part>
+```
+
+`monkelf` is a bootleg with the protection removed and `hayaosi1`'s TMP91640
+is `NO_DUMP`. The core runs its TLCS-90 on those 16 KB of `0x00` -- which is
+NOP -- so the MCU executes nothing, never answers the handshake, and the 68000
+waits forever.
+
+The `.mra` already says which kind each set needs: the game-mode byte's bits
+6:5 (0 MCU, 1 simulated, 2 none, 3 System D's own), which
+`tools/gen_ms1bcd_mra.py` has always emitted and `MS1BCD.sv` decodes into
+`prot_sel`. **`ms1bcd_core` has no port for it**, so `prot_sel` goes nowhere
+and the MCU always runs. `grep -i "iosim\|prot_sel\|prot_type\|has_mcu"`
+over `rtl/` returns nothing.
+
+### This is a scope decision catching up, not a regression
+
+`docs/PLAN.md` 2.2 is explicit: *"The plan takes the exact path for B and C,
+because the CPU core already exists."* The behavioural model was consciously
+skipped. What the sweep adds is the cost: it leaves 2 of the 7 System B sets
+unable to boot, and by the same argument `chimeraba` (System C, `iosim`) will
+fail too -- 3 of 16 shipped sets.
+
+### What it needs
+
+The tables are already written down in PLAN 2.2, from the driver:
+
+```
+hayaosi1   0x51 0x52 0x53 0x54 0x55   0xFC 0x06
+chimeraba  0x56 0x52 0x53 0x55 0x54   0xFA 0x06
+```
+
+Seven command values selecting SYSTEM / P1 / P2 / DSW1 / DSW2 plus two fixed
+replies. So:
+
+1. a `prot [1:0]` input on `ms1bcd_core`, wired from the top's existing
+   `prot_sel`;
+2. a table-driven responder for `iosim` that answers the protection port
+   directly and raises IRQ2, with the MCU held in reset;
+3. whatever `none` means for `monkelf` -- the bootleg's program is patched, so
+   this needs checking against MAME rather than assuming the port is unused.
+
+`oki_2mhz` is in the same position: decoded in the top, no core port (MS1-40).
