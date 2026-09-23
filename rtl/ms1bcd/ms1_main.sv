@@ -217,7 +217,23 @@ module ms1_main (
 	// wandering to 0x0FFFxx with vregw = 0 and vramw = 0, on a ROM image the
 	// golden-byte path had already proven correct. Sand Scorpion's SS-12 and
 	// NMK16's NMK-21 are the same bug, found the same way and fixed like this.
-	wire [18:0] rom_addr_live = b_rom1 ? {2'b10, a[17:1]} : a[19:1];
+	// B's second bank (CPU 0x080000-0x0BFFFF) continues the same SDRAM region
+	// straight after bank 0, at BYTE +0x40000 -- and rom_addr is a WORD index,
+	// so that is word +0x20000, i.e. {2'b01, ...}. {2'b10, ...} is word
+	// 0x40000 = byte 0x80000: one whole bank too far, at or past the end of
+	// MAIN_SIZE_B, where every fetch reads zero.
+	//
+	// avspirit survives ~309 frames on that, because nothing dereferences the
+	// bank-1 pointer table until a scene transition. Then ROM 0x0030C6 does
+	// MOVEA.L ($080000).L,A0, gets 0x00000000 where MAME gets 0x0008000C,
+	// indexes off the null base, and copies low-ROM opcodes (0x4E75 RTS,
+	// 0x4DF9 LEA) into work RAM and on into the video registers -- which is
+	// the 0x4E7F that lands in the layer-enable register. MS1-51.
+	//
+	// The golden-byte audit could not see this: it drives audit_addr straight
+	// into rom_hw's a_main mux, bypassing rom_addr entirely, so it proves the
+	// SDRAM and the cache and says nothing about the CPU's address arithmetic.
+	wire [18:0] rom_addr_live = b_rom1 ? {2'b01, a[17:1]} : a[19:1];
 	reg  [18:0] rom_addr_held;
 	always @(posedge clk) if (sel_rom) rom_addr_held <= rom_addr_live;
 	assign rom_addr = sel_rom ? rom_addr_live : rom_addr_held;

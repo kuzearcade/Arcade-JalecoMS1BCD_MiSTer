@@ -59,7 +59,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-48 | A failed Quartus compile leaves the previous .rbf and reports through a zero exit | closed — build.sh greps the log, not the exit code |
 | MS1-49 | The .mra shipped the 68000 image byte-swapped, and --check validated it against itself | closed — MEASURED on hardware; my first diagnosis had it backwards |
 | MS1-50 | Both 68000s handed the ROM cache their raw bus address | closed — held while the bus is not selecting ROM; SS-12 and NMK-21 are the same bug |
-| MS1-51 | The main 68000 crashes at frame ~309 and the game traps on its watchdog | **OPEN** — narrowed to a 68000 crash in the reference sim; NOT hardware-specific |
+| MS1-51 | System B's second ROM bank was mapped one whole bank too far | closed — `{2'b10,...}` was word +0x40000 where the region wants word +0x20000 |
 | MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
 
 ---
@@ -1536,87 +1536,83 @@ check passes forever; a cross-check against an independently produced artefact
 does not. The sibling project's `.mra` looked like evidence and was not --
 only the measurement was.
 
-## MS1-51 — The main 68000 crashes at frame ~309; the watchdog trap is a symptom (OPEN)
+## MS1-51 — System B's second ROM bank was mapped one whole bank too far (closed)
 
-The board boots `avspirit` and then sits on the game's own `ERROR TRAPED /
-WATCH DOG TIMER` screen. The next measurement this entry asked for -- IRQ
-counts against the reference sim -- has been taken, and it moved the fault a
-long way from where it looked.
+The board booted `avspirit` and stopped on the game's own `ERROR TRAPED /
+WATCH DOG TIMER` screen. Everything about that was a symptom; the cause was one
+expression in `ms1_main.sv`.
 
-### What the comparison showed
+### The chain, shortest first
 
-Per-frame IRQ2 (the MCU answering the 68000's protection handshake):
+`assign rom_addr = b_rom1 ? {2'b10, a[17:1]} : a[19:1];`
 
-| | IRQ2 per frame |
-|---|---:|
-| reference sim | ~15 |
-| hardware-path sim | ~14 |
-| board | ~1 |
+`rom_addr` is a WORD index. System B's second program bank (CPU
+0x080000-0x0BFFFF) continues the same SDRAM region straight after bank 0, at
+BYTE +0x40000, which is WORD +0x20000. `{2'b10, a[17:1]}` is word 0x40000 =
+byte 0x80000: one whole bank too far, at or past the end of `MAIN_SIZE_B`
+(0x80000 bytes), where every fetch reads zero. The comment beside it said
+"+0x40000" and meant bytes; the code added that many words.
 
-The board figure is an artefact of averaging a cumulative counter across a
-stall: IRQ2 is **frozen**, not slow. Two captures 30 s apart both read
-`irq2=3634` while `int1e` advanced 3121 -> 3391. The game runs normally for
-about 260 frames and then stops.
+`avspirit` survives about 309 frames on that, because nothing dereferences the
+bank-1 pointer table until a scene transition. Then, at ROM 0x0030C6:
 
-### It is not the hardware ROM path
+```
+2079 0008 0000    MOVEA.L ($080000).L, A0
+...
+33D8 0007 8F46    MOVE.W  (A0)+, ($78F46).L
+```
 
-Both simulations reproduce it:
+| | reads at 0x080000 | then indexes | writes to 0x078F46 |
+|---|---|---|---|
+| MAME | 0008 000C | 0x08008A, 0x082BDC | 0000 |
+| core (before) | **0000 0000** | 0x00007E, 0x0011EA | **4E75** (an RTS, from low ROM) |
 
-| | IRQ2 freezes at | MCU stops executing at |
+With a null base it copies low-ROM opcodes into work RAM, and a later routine
+copies that work RAM into the video registers -- which is the `0x4E7F` that
+appears in the layer-enable register at frame 310. The 68000 then stops
+servicing the protection handshake (IRQ2 freezes), the MCU idles 47 frames and
+takes its own `DI; HALT` error path at ROM 0x0227, and the game's software
+watchdog paints the screen the board showed.
+
+### Why nothing caught it
+
+- **The frame gates run 70 frames.** This needs 309. Re-running the identical
+  70-frame comparison before and after the fix gives byte-identical output
+  (`5 exact, worst 1812` at offset 50, both) -- the first 70 frames never touch
+  bank 1.
+- **The golden-byte audit could not see it.** It drives `audit_addr` straight
+  into `rom_hw`'s `a_main` mux, bypassing `rom_addr` entirely. It proves the
+  download, the SDRAM and the cache; it says nothing about the CPU's own
+  address arithmetic. That is why main, sound and MCU all audited exact
+  (0xE54D / 0x42CA / 0xD4F1) while the CPU was reading zeros.
+- **It is not hardware-specific.** The reference simulation -- plain arrays, no
+  SDRAM, no caches -- fails identically, which is what finally ruled out the
+  ROM byte order, the cache sizes, port-3 arbitration and refresh.
+
+### Scope
+
+System B only. System C reads its program through `c_rom0`, a single 512 KB
+bank using `a[19:1]`, and never takes this path. So `avspirit`, `monkelf`, the
+four EDF sets and `hayaosi1` -- 7 of the 17 sets. System D uses the same
+`~is_c` path and would have been wrong too, but its memory map is not
+implemented (PLAN 2.5).
+
+### Result
+
+450 frames of `avspirit` in the reference sim, against the two points that used
+to fail:
+
+| | before | after |
 |---|---|---|
-| hardware-path sim | frame ~310, irq2=3635 | frame 364 |
-| **reference sim** | **frame 310, irq2=3874** | frame 357 |
-| board | (irq2=3634) | — |
+| frame 310 | `act=4E7F`, IRQ2 frozen at 3874 | `act=000F`, IRQ2 3874 and climbing |
+| frame 357 | `mcuacc` frozen, `halt=1 if=0` | `mcuacc` rising, `halt=0 if=1` |
+| frame 450 | (dead) | IRQ2 5938, `mcuacc` 14,117,787 |
 
-The **reference** simulation -- plain arrays, no SDRAM, no caches -- fails the
-same way. So every hardware-path suspicion was wrong: the ROM byte order, the
-cache sizes, port-3 arbitration, refresh. A trace of port 3 taken after the
-freeze shows it perfectly healthy, req/ack alternating, addresses advancing,
-with `mcu_rom_ready` HIGH.
+Over all 450 frames `dbg_active` is only 0x0000 (53 boot frames) or 0x000F
+(397), never 0x4E7F, and no frame has `halt=1`.
 
-M2 gate 2 and M3 ran 70 frames. This is at 310. Nothing had ever looked.
-
-### What actually happens, in order
-
-| frame | `dbg_active` | VRAM writes | |
-|---|---|---:|---|
-| 308 | 000F | 35,447 | normal, ~10 writes/frame, layer 0 scrolling |
-| 309 | 000F | 45,604 | a 10,000-write burst -- a scene transition |
-| 310 | **4E7F** | 50,818 | garbage in the layer-enable register |
-| 311 | **4E7F** | 55,994 | |
-| 312 | 000F | 56,149 | and frozen from here on |
-
-`0x4E7F` is a 68000 opcode pattern, not a layer-enable value: **the main CPU
-wrote code into a video control register.** Scrolling stops at the same frame
-(`t0x` sticks at 0x00F7) and VRAM writes stop entirely.
-
-So the 68000 goes off the rails during a scene transition at frame 309. Every
-later symptom follows from that: it stops servicing the protection handshake,
-so IRQ2 stops; the MCU idles in its main loop (0x01B8-0x01CC) for 47 frames
-and then takes its own error path -- `DI; HALT` at ROM 0x0227, which the
-firmware image really does contain (`02 1C E4 05 1C CA 05 01`, twice) -- and
-the 68000's software watchdog, a work-RAM word incremented by the level-4
-interrupt, passes its limit and traps.
-
-**The MCU halt is not a core bug.** It halts with `if=0` and INT1 pending, and
-MAME's `check_interrupts()` returns early on `!(F & IF)` and only leaves HALT
-via `take_interrupt()` -- so MAME would sit there too. The firmware asked to
-stop.
-
-### Where to look next
-
-The 68000, at frame 309, in whatever routine runs the transition. The
-instrument is already there: `tr_addr`/`tr_data`/`tr_we` in `ms1_main.sv` trace
-every bus cycle, and `MS1_TRACE` in the frames harness prints them. Capturing
-the last few thousand cycles before the first write of `0x4E7F` to the video
-register, and comparing against the same window from MAME's bus trace
-(`sim/oracle/ms1_bustrace.lua`), should name the divergence.
-
-A wrong protection response is the obvious candidate -- these games use the
-MCU's answers to build pointers, so one bad word becomes a bad jump -- but
-that is a hypothesis, and this entry has already cost two of those.
-
-
+**Not yet re-run on hardware**, and the frame-accuracy gate is a separate
+measurement that this does not by itself settle.
 
 ## MS1-52 — The MCU's IRF register never cleared an interrupt request (closed)
 

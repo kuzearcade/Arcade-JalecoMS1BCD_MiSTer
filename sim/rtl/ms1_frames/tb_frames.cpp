@@ -113,13 +113,34 @@ int main(int argc, char **argv) {
 	std::vector<uint32_t> cur(W * H, 0);
 	size_t px = 0;
 	long maxclk = getenv("MS1_CLK") ? atol(getenv("MS1_CLK")) : 60000000000L;
+	long long tr_seq = 0;
+	bool traced_any = false;
+	long trace_from = getenv("MS1_TRACE_FROM") ? atol(getenv("MS1_TRACE_FROM")) : 0;
 
 	for (long c = 0; c < maxclk && (int)frames.size() < nframes; c++) {
 		tick();
 		if (plog && top->tr_valid && (top->tr_addr == PROT_ADDR))
 			fprintf(plog, "%c %04X\n", top->tr_we ? 'w' : 'r', top->tr_data & 0xFFFF);
-		if (getenv("MS1_TRACE") && top->tr_valid)
-			fprintf(stderr, "%c %06X %04X\n", top->tr_we ? 'w' : 'r', top->tr_addr, top->tr_data);
+		// MS1-51: the main-CPU bus trace, in tools/bus_compare.py's four-field
+		// form (<r|w> <seq> <addr> <data>). `seq` counts EVERY traced access
+		// from reset, so it is the same index MAME's MS1_SKIP_ACC counts in
+		// and the two windows can be positioned against each other.
+		//
+		// MS1_TRACE_FROM=<frame> starts the dump at a frame boundary instead
+		// of at reset: the interesting window here is around frame 309 and a
+		// full dump from reset is ~10M lines.
+		if (top->tr_valid) {
+			tr_seq++;
+			if (getenv("MS1_TRACE") && (long)frames.size() >= trace_from) {
+				if (!traced_any) {
+					fprintf(stderr, "# trace starts at frame %zu, seq %lld\n",
+					        frames.size(), tr_seq);
+					traced_any = true;
+				}
+				fprintf(stderr, "%c %lld %06X %04X\n",
+				        top->tr_we ? 'w' : 'r', tr_seq, top->tr_addr, top->tr_data);
+			}
+		}
 		if (top->vblank_rise && getenv("MS1_REGS"))
 			fprintf(stderr, "frame regs: act=%04X t0c=%04X t1c=%04X t2c=%04X t0x=%04X t0y=%04X vramw=%u\n",
 			        top->dbg_active, top->dbg_t0c, top->dbg_t1c, top->dbg_t2c, top->dbg_t0x, top->dbg_t0y, top->dbg_vramw),
