@@ -214,7 +214,7 @@ module ms1bcd_core #(
 		.v0_rd_addr(v0a), .v1_rd_addr(v1a), .v2_rd_addr(v2a),
 		.v0_rd_data(v0d), .v1_rd_data(v1d), .v2_rd_data(v2d),
 		.pal_rd_addr(pala), .pal_rd_data(pald),
-		.vbl_rise(vblank_rise),
+		.vbl_rise(vblank_rise), .spr_buf_busy(spr_buf_busy),
 		.obj_rd_addr(obja), .obj_rd_data(objd),
 		.spr_rd_addr(spra), .spr_rd_data(sprd),
 		.reg_active_layers(r_act), .reg_sprite_flag(r_sf),
@@ -244,6 +244,7 @@ module ms1bcd_core #(
 	// The sprite pass runs once a frame, started just after the buffers are
 	// shifted so it draws the frame the hardware would show next.
 	reg spr_start;
+	wire spr_buf_busy;
 	always @(posedge clk) spr_start <= vblank_rise;
 
 	// count non-black pixels actually emitted, plus per-layer opacity: tells
@@ -385,7 +386,7 @@ module ms1bcd_core #(
 		.l0_rom_use_addr(l0_rom_use_addr), .l1_rom_use_addr(l1_rom_use_addr),
 		.l2_rom_use_addr(l2_rom_use_addr),
 		.l0_rom_data(l0_rom_data), .l1_rom_data(l1_rom_data), .l2_rom_data(l2_rom_data),
-		.spr_start(spr_start), .spr_busy(),
+		.spr_start(spr_start), .spr_busy(), .spr_buf_busy(spr_buf_busy),
 		.obj_addr(obja), .spr_ram_addr(spra),
 		.obj_data(objd), .spr_ram_data(sprd),
 		.spr_rom_addr(spr_rom_addr), .spr_rom_data(spr_rom_data),

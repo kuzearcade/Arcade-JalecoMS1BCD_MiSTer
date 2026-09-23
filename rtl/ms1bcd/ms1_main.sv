@@ -145,6 +145,11 @@ module ms1_main (
 	// are those the CPU wrote two frames ago. Sprite RAM is not a named
 	// region at all -- it is work RAM + 0x8000 (&m_ram[0x8000/2]).
 	input               vbl_rise,      // one pulse at the start of vblank
+	// High while the object/sprite double buffers are being shifted at the
+	// start of vblank. The sprite engine has to wait for it: until MS1-60 the
+	// engine's 65536-clock plane clear happened to cover the 4096-clock copy,
+	// and removing that clear exposed the dependency.
+	output              spr_buf_busy,
 	input       [11:0]  obj_rd_addr,
 	output reg  [15:0]  obj_rd_data,
 	input       [11:0]  spr_rd_addr,
@@ -641,6 +646,7 @@ module ms1_main (
 	reg [15:0] spr_b2 [0:4095];
 	reg [12:0] bufi;
 	reg        buf_busy;
+	assign spr_buf_busy = buf_busy;
 	always @(posedge clk) begin
 		if (reset) begin buf_busy <= 1'b0; bufi <= 13'd0; end
 		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd0)) begin

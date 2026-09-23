@@ -4,9 +4,10 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Five are open**: two from M0 answerable off-board, MS1-31 which needs the
-board, MS1-33 from M3, and MS1-60, the sprite-pass beam race. MS1-32 closed
-as a misdiagnosis of MS1-57.
+**Four are open**: two from M0 answerable off-board, MS1-31 which needs the
+board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57; MS1-60
+fixed, with the budget measured but the symptom itself still not demonstrated
+pixel for pixel.
 
 | | | |
 |---|---|---|
@@ -68,7 +69,7 @@ as a misdiagnosis of MS1-57.
 | MS1-56 | System D has no memory map: `mode == 2` falls into System B's | closed — map, 2 layers, 555 palette, own protection, main-CPU OKI |
 | MS1-57 | The tile-fetch lookahead wrapped on the visible width, not the whole line | closed — every SDRAM-path line began with 8 pixels from column 128; the reference sim runs LOOKAHEAD 0 and could not see it |
 | MS1-58 | The sim Makefiles do not depend on the RTL verilator finds through `-y` | closed — `RTLSRC` wildcard; a fix in ms1_video.sv left the old binary in place and the next run re-measured the bug |
-| MS1-60 | The sprite pass overruns blanking by ~15 rows, so the top of the plane is read while it is still being drawn | **OPEN** — measured 212970 clk against a 165888 clk budget on cybattlr; the fix is costed, not applied |
+| MS1-60 | The sprite pass overruns blanking by ~15 rows, so the top of the plane is read while it is still being drawn | fixed — clear swept behind the display read; 212970 -> 151372 clk, inside the 165888 budget |
 | MS1-59 | Every game shows a five-pixel strip down the left of the screen | closed — the core's pixel lags its raster position by 5; measured 5 px -> 0 px against MAME on the board |
 
 ---
@@ -2583,7 +2584,7 @@ has not been measured. The method that settled it here is cheap and transfers
 directly: capture the same static attract screen on the board and in MAME,
 then scan shifts 0..8 for the one that gives zero differing pixels.
 
-## MS1-60 — the sprite pass overruns blanking, and the beam reads the plane while it is still being drawn (OPEN)
+## MS1-60 — the sprite pass overruns blanking, and the beam reads the plane while it is still being drawn (fixed)
 
 Reported from the board: **enemy sprites disappear on the right of the screen
 in Cybattler, but never on the left.** Cybattler is the only ROT90 set and is
@@ -2686,6 +2687,70 @@ A second, data-dependent saving is available and is what MAME would do: skip
 the blit entirely for an object that is wholly off-screen. MAME has exactly
 that test written at `megasys1_v.cpp:381` and commented out. It does not
 guarantee the budget on its own, so it is a supplement, not the fix.
+
+### Applied
+
+The clear is no longer part of the pass. It is swept a row at a time behind
+the display read, 256 clocks out of the 3072 in a raster line:
+
+```
+cybattlr sprite pass   212970 -> 151372 clk
+budget                          165888 clk (54 rows)
+  before   overrun +47082 clk = +15.3 rows
+  after    margin  +14516 clk =  +4.7 rows
+```
+
+Three things had to travel with it:
+
+- **The row comes from `fb_rd_addr[15:8]`, not from the raster counter.** That
+  makes the sweep follow the screen flip for free -- flipped, the display
+  walks the rows downwards and so does the sweep -- and it is what makes the
+  ordering safe by construction rather than by arithmetic: a row is wiped only
+  once the display has finished reading it.
+- **`S_CLEAR` became `S_WAIT`.** Removing the clear exposed a dependency it
+  had been hiding. `ms1_main` copies the object and sprite double buffers over
+  4096 clocks from `vblank_rise`, and the pass starts on the same edge; the
+  old clear's 65536 clocks always outlasted the copy, so nothing ever waited
+  for it. Without the clear the engine would read straight through the shift
+  and take half of one frame's objects and half of the next's. `buf_busy` is
+  now plumbed out of `ms1_main` through the core and `ms1_video`, and the pass
+  waits on it.
+- **`on_screen` tightened to `py in [16,240)`**, which is MAME's cliprect
+  exactly. This is required rather than cosmetic: the sweep only covers the
+  rows the display reads, so a sprite written outside that band would never be
+  wiped again.
+
+`sprite_flag` bit 4 ("do not clear", the P47 trails effect) suppresses the
+sweep exactly as it used to suppress `S_CLEAR`. The savestate keeps its
+layout: fields 4 and 5 held the clear counter and now hold the sweep's row/x
+and run flag, restored inside the block that owns them (MS1-34). The engine
+stalls in `S_BB` if the sweep holds the write port so a blit can never be
+dropped silently, though the two do not overlap in practice -- the pass runs
+through blanking, the sweep only during displayed lines.
+
+**Regression, on both paths and both a B and a D set:**
+
+| | before | after |
+|---|---|---|
+| `peekaboo`, reference sim vs MAME | 15/20 exact | 15/20 exact, **same frames, same counts** (31 the fade-in, then 530/222/411/662) |
+| `avspirit`, SDRAM path vs reference sim | 70/70 identical | **70/70 identical** |
+| `avspirit` sprite pass | 211992 clk | **150534 clk** |
+| `cybattlr` sprite pass | 212970 clk | **151372 clk** |
+
+Not one pixel moved anywhere, and the ~61k saving is the same on both games,
+as it should be for a cost that was always fixed.
+
+**On the board**, the cybattlr attract was recaptured on the fixed bitstream
+and matched against the same 1800 MAME frames: the same six frames are
+pixel-identical (f1401, f1523, f1565, f1571, f1577, f2091), the same 35-pixel
+near-miss at f1976, and the same residuals on the frames that run past the
+capture window. Byte for byte the pre-fix result, so nothing regressed where
+the core was already right.
+
+The symptom itself still has no pixel-level demonstration, for the reason
+given above: gameplay cannot be aligned against MAME frame for frame. What is
+established is that the budget is now met with 4.7 rows in hand where it was
+missed by 15.3, on both paths and on a System B, C and D set.
 
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 

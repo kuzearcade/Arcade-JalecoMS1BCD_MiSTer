@@ -198,8 +198,8 @@ has run.
 
 The bitstream is at `releases/Arcade-JalecoMS1BCD_20260923.rbf`: 69 % of the
 ALMs, **544 of 553 M10K**, **0 timing violations**. It carries System D
-(MS1-56), the lookahead fix (MS1-57), the video alignment fix (MS1-59) and
-the four OSD features (MS1-39).
+(MS1-56), the lookahead fix (MS1-57), the video alignment fix (MS1-59), the
+four OSD features (MS1-39) and the sprite-pass fix (MS1-60).
 
 MS1-39 is what made the M10K figure tight: 538 -> 544, nine blocks spare. The
 cost is not the high-score and cheat engines themselves -- their tables are

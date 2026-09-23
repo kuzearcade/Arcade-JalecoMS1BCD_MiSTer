@@ -53,6 +53,7 @@ module ms1_video #(
 	input        [1:0]  mode,          // 0 = B, 1 = C, 2 = D
 	input        [1:0]  nlayers,       // 3 for B/C, 2 for D
 	input               osd_flip,      // OSD "Flip screen": 180 degrees
+	input               spr_buf_busy,  // the object/sprite buffer shift (MS1-60)
 
 	// video registers
 	input       [15:0]  active_layers,
@@ -189,8 +190,15 @@ module ms1_video #(
 	// ---- sprite plane. Its readback is one cycle, the tilemaps are three,
 	// so the sprite pixel is delayed two stages to meet them.
 	wire [8:0] fb_q;
+	// MS1-60: the plane is cleared a row at a time BEHIND THE DISPLAY READ,
+	// not in one 65536-clock burst at the head of the pass. `disp_active` is
+	// "this raster line is one the display is reading", which is what paces
+	// the sweep; taking the row itself from fb_rd_addr rather than from vy
+	// makes it follow the screen flip for free.
+	wire disp_active = (vy < VIS_H[8:0]);
 	ms1_sprites u_spr (.clk(clk), .reset(reset | ss_rst_dbg),
 		.start(spr_start), .busy(spr_busy),
+		.buf_busy(spr_buf_busy), .disp_active(disp_active),
 		.sprite_flag(sprite_flag), .sprite_bank(sprite_bank),
 		.obj_addr(obj_addr), .obj_data(obj_data),
 		.spr_addr(spr_ram_addr), .spr_data(spr_ram_data),

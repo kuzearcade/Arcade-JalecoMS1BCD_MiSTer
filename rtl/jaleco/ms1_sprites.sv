@@ -30,6 +30,20 @@
 // 15 meaning empty -- the same encoding MAME's 0x7fff fill uses. It is NOT
 // double buffered: sprite_flag bit 4 ("do not clear the sprite framebuffer")
 // deliberately lets the previous frame survive, which a swap would destroy.
+// A swap is unaffordable anyway -- 589824 bits and 72 M10K per copy.
+//
+// BECAUSE IT IS SINGLE BUFFERED, THE PASS MUST FINISH BEFORE THE DISPLAY
+// REACHES THE PLANE. It did not: with the clear at the head of the pass the
+// whole thing took ~213000 clocks against the 165888 from vblank_rise to the
+// first displayed row, so the top ~15 rows were read while they were still
+// being drawn -- invisible on most scenes, and on Cybattler (the one ROT90
+// set) a band of dropped sprites down the right of the rotated screen.
+// MS1-60.
+//
+// The clear is therefore no longer part of the pass. It is swept a row at a
+// time BEHIND THE DISPLAY READ, 256 clocks out of the 3072 in a raster line,
+// which costs the pass nothing and cannot race the display by construction:
+// a row is wiped only after the display has finished reading it.
 //
 // Memories are read COMBINATIONALLY (data valid the cycle after the address
 // register updates), the convention the rest of this project's sims use.
@@ -42,6 +56,14 @@ module ms1_sprites (
 
 	input               start,          // one pulse begins a pass
 	output reg          busy,
+	// MS1-60. buf_busy is the object/sprite buffer shift at vblank; the pass
+	// must not read the buffers through it. Until the plane clear moved out
+	// of the pass, the clear's 65536 clocks hid that dependency.
+	input               buf_busy,
+	// High while the display is reading a line of the plane. The row-at-a-
+	// time clear follows it: a row is wiped only once the display has
+	// finished with it.
+	input               disp_active,
 	// M3 gate: the pass must finish inside one frame. dbg_pass_cycles is the
 	// LONGEST pass seen; dbg_late_swaps counts the times a new pass was asked
 	// for while the previous one was still running, which on the board is a
@@ -116,10 +138,55 @@ module ms1_sprites (
 	reg  [8:0] fb_wr_data;
 	reg        fb_we;
 
-	// one write, one read, per copy
-	wire        pl_we   = (ss_plane & ss_wr) | fb_we;
-	wire [15:0] pl_wa   = (ss_plane & ss_wr) ? ss_addr[15:0] : fb_wr_addr;
-	wire  [8:0] pl_wd   = (ss_plane & ss_wr) ? ss_wdata[8:0] : fb_wr_data;
+	// ---- the row-at-a-time clear (MS1-60).
+	// The display's row is fb_rd_addr[15:8]; when it changes, the row it just
+	// left is finished with and is wiped over the next 256 clocks. Taking the
+	// row from the READ ADDRESS rather than from the raster counter means
+	// this follows the screen flip without knowing about it -- flipped, the
+	// display walks the rows downwards and so does the sweep.
+	//
+	// 256 clocks out of the 3072 in a line, so a new row can never arrive
+	// while the previous sweep is still running.
+	wire [7:0] rd_row = fb_rd_addr[15:8];
+	reg  [7:0] rd_row_d;
+	reg        disp_d;
+	reg  [7:0] swp_row, swp_x;
+	reg        swp_run;
+	// sprite_flag bit 4 is "do not clear": the P47 trails effect keeps the
+	// previous plane, and it has to suppress the sweep exactly as it used to
+	// suppress S_CLEAR.
+	always @(posedge clk) begin
+		rd_row_d <= rd_row;
+		disp_d   <= disp_active;
+		if (reset) begin swp_run <= 1'b0; swp_x <= 8'd0; end
+		else if (ss_fsm & ss_wr & (ss_addr[4:0] == 5'd4)) begin
+			swp_row <= ss_wdata[15:8]; swp_x <= ss_wdata[7:0];
+		end
+		else if (ss_fsm & ss_wr & (ss_addr[4:0] == 5'd5)) swp_run <= ss_wdata[0];
+		else if (swp_run) begin
+			swp_x <= swp_x + 8'd1;
+			if (swp_x == 8'd255) swp_run <= 1'b0;
+		end
+		// a row change inside the window, or the end of the last row of it
+		else if (~no_clear & ((disp_active & (rd_row != rd_row_d))
+		                   | (disp_d & ~disp_active))) begin
+			swp_row <= rd_row_d;
+			swp_x   <= 8'd0;
+			swp_run <= 1'b1;
+		end
+	end
+	wire        swp_we = swp_run;
+	wire [15:0] swp_wa = {swp_row, swp_x};
+
+	// one write, one read, per copy. The sweep wins over the engine, and the
+	// engine stalls rather than dropping the write (see S_BB) -- in practice
+	// they never collide, because the engine's pass runs through blanking and
+	// the sweep only during displayed lines.
+	wire        pl_we   = (ss_plane & ss_wr) | swp_we | fb_we;
+	wire [15:0] pl_wa   = (ss_plane & ss_wr) ? ss_addr[15:0]
+	                    : swp_we             ? swp_wa : fb_wr_addr;
+	wire  [8:0] pl_wd   = (ss_plane & ss_wr) ? ss_wdata[8:0]
+	                    : swp_we             ? 9'h00F : fb_wr_data;
 	always @(posedge clk) begin
 		if (pl_we) plane_e[pl_wa] <= pl_wd;
 		eng_q <= plane_e[plane_a];
@@ -152,14 +219,13 @@ module ms1_sprites (
 		end
 	end
 
-	localparam [4:0] S_IDLE = 5'd0,  S_CLEAR = 5'd1,
+	localparam [4:0] S_IDLE = 5'd0,  S_WAIT  = 5'd1,
 	                 S_O0   = 5'd2,  S_O1  = 5'd3,  S_O2 = 5'd4,  S_O3 = 5'd5,
 	                 S_O4   = 5'd6,
 	                 S_S0   = 5'd7,  S_S1  = 5'd8,  S_S2 = 5'd9,  S_S3 = 5'd10,
 	                 S_DEC  = 5'd11, S_BA  = 5'd12, S_BB = 5'd13, S_NEXT = 5'd14;
 
 	reg [4:0]  st;
-	reg [16:0] clr;
 	reg [7:0]  offs;          // object entry index, counts DOWN 255..0
 	reg [1:0]  bank;
 	reg [11:0] sbase;
@@ -183,8 +249,11 @@ module ms1_sprites (
 			5'd1:  ss_fsm_rdata = eng_addr;
 			5'd2:  ss_fsm_rdata = fb_wr_addr;
 			5'd3:  ss_fsm_rdata = {7'd0, fb_wr_data};
-			5'd4:  ss_fsm_rdata = clr[15:0];
-			5'd5:  ss_fsm_rdata = {15'd0, clr[16]};
+			// MS1-60: these two used to be the S_CLEAR counter; they now
+			// carry the row-at-a-time sweep, which is the state that
+			// replaced it.
+			5'd4:  ss_fsm_rdata = {swp_row, swp_x};
+			5'd5:  ss_fsm_rdata = {15'd0, swp_run};
 			5'd6:  ss_fsm_rdata = {8'd0, offs};
 			5'd7:  ss_fsm_rdata = {14'd0, bank};
 			5'd8:  ss_fsm_rdata = {4'd0, sbase};
@@ -236,8 +305,13 @@ module ms1_sprites (
 
 	wire signed [11:0] px = {sx[10], sx} + {8'd0, bx};
 	wire signed [11:0] py = {sy[10], sy} + {8'd0, by};
-	wire on_screen = (px >= 12'sd0) && (px < 12'sd256)
-	              && (py >= 12'sd0) && (py < 12'sd256);
+	// MAME's cliprect exactly: min_x 0, max_x 255, min_y 16, max_y 239
+	// (megasys1.cpp set_visarea(0*8, 32*8-1, 2*8, 30*8-1)). The y bound used
+	// to be the full 0..255, which drew into plane rows the display never
+	// reads; the row-at-a-time clear only sweeps the rows that ARE read, so
+	// anything outside would never be wiped again. MS1-60.
+	wire on_screen = (px >= 12'sd0)  && (px < 12'sd256)
+	              && (py >= 12'sd16) && (py < 12'sd240);
 
 	// the next pixel's addresses, so S_BB can set up S_BA's fetch in one go
 	wire [15:0] cur_fb = {py[7:0], px[7:0]};
@@ -256,8 +330,8 @@ module ms1_sprites (
 				5'd1:  eng_addr   <= ss_wdata;
 				5'd2:  fb_wr_addr <= ss_wdata;
 				5'd3:  fb_wr_data <= ss_wdata[8:0];
-				5'd4:  clr[15:0]  <= ss_wdata;
-				5'd5:  clr[16]    <= ss_wdata[0];
+				// 5'd4 / 5'd5 are the clear sweep and are restored in the
+				// block that owns it (MS1-34).
 				5'd6:  offs       <= ss_wdata[7:0];
 				5'd7:  bank       <= ss_wdata[1:0];
 				5'd8:  sbase      <= ss_wdata[11:0];
@@ -291,25 +365,25 @@ module ms1_sprites (
 		end else case (st)
 		S_IDLE: if (start) begin
 			busy <= 1'b1;
-			clr  <= 17'd0;
 			offs <= 8'd255;
 			bank <= 2'd0;
-			// sprite_flag bit 4 keeps the previous plane (the P47 trails
-			// effect). MAME then partially clears by pen, which is not
-			// modelled -- docs/known-issues.md MS1-17.
-			if (no_clear) begin obj_addr <= {2'd0, 8'd255, 2'd0}; st <= S_O0; end
-			else st <= S_CLEAR;
+			// The plane clear is NOT done here any more -- it is swept a row
+			// at a time behind the display read (MS1-60). sprite_flag bit 4,
+			// which keeps the previous plane for the P47 trails effect,
+			// suppresses that sweep instead. MAME then partially clears by
+			// pen, which is still not modelled -- MS1-17.
+			st <= S_WAIT;
 		end
 
-		S_CLEAR: begin
-			fb_wr_addr <= clr[15:0];
-			fb_wr_data <= 9'h00F;             // pen 15 = empty
-			fb_we      <= 1'b1;
-			clr        <= clr + 17'd1;
-			if (clr == 17'd65535) begin
-				obj_addr <= {2'd0, 8'd255, 2'd0};
-				st <= S_O0;
-			end
+		// WAIT FOR THE BUFFER SHIFT. ms1_main copies the object and sprite
+		// double buffers over 4096 clocks from vblank_rise, and this pass
+		// starts on the same edge. The old S_CLEAR spent 65536 clocks first,
+		// so the copy was always long finished before the first object read;
+		// with the clear gone the dependency is real, and reading through the
+		// copy would take half of one frame's objects and half of the next's.
+		S_WAIT: if (!buf_busy) begin
+			obj_addr <= {2'd0, 8'd255, 2'd0};
+			st <= S_O0;
 		end
 
 		// ---- object entry: four words. The address is registered and the
@@ -361,9 +435,10 @@ module ms1_sprites (
 			eng_addr <= cur_fb;
 			st <= S_BB;
 		end
-		S_BB: if (!rom_ready) begin
-			// Hold here until the byte is valid. Everything below reads `pix`,
-			// which is a nibble of rom_data.
+		S_BB: if (!rom_ready || swp_we) begin
+			// Hold here until the byte is valid -- and until the clear sweep
+			// has let go of the write port, so a blit is never silently
+			// dropped. Everything below reads `pix`, a nibble of rom_data.
 			st <= S_BB;
 		end else begin
 			// FIRST WRITER WINS: only an empty plane pixel (pen 15) is taken.
