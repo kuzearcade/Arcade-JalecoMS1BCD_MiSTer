@@ -95,6 +95,23 @@ module ms1_main (
 	input        [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
 	input        [7:0]  in_sys_hi,
 
+	// ---- OSD Pause. Gates the 68000's phi enables and the MCU's cen, so
+	// both stop at an instruction boundary and resume where they were.
+	// MS1-39.
+	input               pause,
+
+	// ---- the high-score / cheat back door into work RAM (MS1-39).
+	// hs_addr is the 68000's OWN byte address, as hiscore.dat and Pugsy's
+	// cheat tables write it, so the index is taken the same way the CPU's
+	// is: every mode's work RAM is 64 KB aligned, so a[15:1] serves all
+	// three. Only ever driven while the CPU is paused, which is what makes
+	// sharing the single write port safe.
+	input       [23:0]  hs_addr,
+	input        [7:0]  hs_din,
+	output       [7:0]  hs_dout,
+	input               hs_write,
+	input               hs_access,
+
 	// System D's OKIM6295, driven by THIS CPU (there is no sound CPU on that
 	// board). oki_we is one pulse per write at 0F8001; oki_bank is the sample
 	// bank the protection latch selects; oki_status is the chip's own read
@@ -173,6 +190,14 @@ module ms1_main (
 	output      [10:0]  dbg_mcu_irqp, dbg_mcu_mask
 );
 	// ------------------------------------------------------- 68000 clocking
+	// PAUSE IS RE-TIMED ONTO enPhi2. Masking the two enables with the raw
+	// OSD bit would drop whichever half of the pair the bit happened to
+	// land on and leave fx68k mid-cycle; sampled on enPhi2 it can only take
+	// effect at a phi boundary. MS1-39, and SandScrp's pause_68k does the
+	// same for the same reason.
+	reg pause_68k = 1'b0;
+	always @(posedge clk) if (enPhi2) pause_68k <= pause;
+
 	// enPhi1/enPhi2 must strictly alternate; fx68k wedges mid-cycle otherwise.
 	reg [2:0] phdiv;
 	wire [2:0] phdiv_max = (mode == 2'd1) ? 3'd1 : 3'd2;   // 12 MHz : 8 MHz
@@ -442,6 +467,20 @@ module ms1_main (
 				obj_v[ss_addr[11:0]] <= ss_wdata;
 				obj_c[ss_addr[11:0]] <= ss_wdata;
 			end
+		end else if (hs_access) begin
+			// The back door owns the port while the CPU is paused. ONE byte,
+			// not a mirrored pair: the work-RAM quirk below belongs to the
+			// 68000's write path, and applying it here would corrupt the
+			// neighbouring byte of every score.
+			if (hs_write) begin
+				if (~hs_addr[0]) begin
+					wram  [hs_wi][15:8] <= hs_din;
+					wram_s[hs_wi][15:8] <= hs_din;
+				end else begin
+					wram  [hs_wi][7:0]  <= hs_din;
+					wram_s[hs_wi][7:0]  <= hs_din;
+				end
+			end
 		end else if (we) begin
 			if (sel_ram) begin
 				wram  [wram_i] <= ram_wdat;
@@ -509,9 +548,16 @@ module ms1_main (
 	// savestate engine, which never run at the same time (the core is parked
 	// while an image streams). An asynchronous read would leave all 512 Kbit
 	// of this as flip-flops -- MS1-37, docs/PLAN.md 4.C.1.
-	wire [14:0] wram_rd_i = ss_active ? ss_addr[14:0] : wram_i;
+	// 68000 byte order: address bit 0 clear is the HIGH byte of the word.
+	wire [14:0] hs_wi = hs_addr[15:1];
+	wire [14:0] wram_rd_i = ss_active ? ss_addr[14:0] : hs_access ? hs_wi : wram_i;
 	reg  [15:0] wram_q;
 	always @(posedge clk) wram_q <= wram[wram_rd_i];
+	// Registered one more stage than the address, matching wram_q, so the
+	// reader sees the byte of the address it presented.
+	reg hs_a0_q;
+	always @(posedge clk) hs_a0_q <= hs_addr[0];
+	assign hs_dout = hs_a0_q ? wram_q[7:0] : wram_q[15:8];
 
 	wire  [9:0] pal_rd_i = ss_active ? ss_addr[9:0] : pal_i;
 	reg  [15:0] pal_q;
@@ -763,7 +809,10 @@ module ms1_main (
 		else if (ss_active) mdiv <= mdiv;
 		else mdiv <= (mdiv == mdiv_max) ? 3'd0 : mdiv + 3'd1;
 	end
-	wire mcu_cen_tick = (mdiv == mdiv_max);
+	// The protection MCU pauses with the main CPU: it answers a handshake
+	// the paused 68000 is in the middle of, and letting it run on would let
+	// it time out against a CPU that is not there.
+	wire mcu_cen_tick = (mdiv == mdiv_max) & ~pause;
 
 	wire mcu_irq2;
 	// Only the source the .mra selected may raise it. mcu_irq2 is quiet while
@@ -1048,7 +1097,7 @@ module ms1_main (
 
 	fx68k u_cpu (
 		.clk(clk), .HALTn(1'b1), .extReset(reset), .pwrUp(reset),
-		.enPhi1(enPhi1), .enPhi2(enPhi2),
+		.enPhi1(enPhi1 & ~pause_68k), .enPhi2(enPhi2 & ~pause_68k),
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),
 		.oRESETn(oRESETn), .oHALTEDn(oHALTEDn),

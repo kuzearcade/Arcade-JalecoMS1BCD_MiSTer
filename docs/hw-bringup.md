@@ -175,9 +175,17 @@ only appears under `quartus_sh --flow compile`. Running `quartus_map` alone
 fails with `can't open Verilog Design File "build_id.v"` until one full flow
 has run.
 
-The bitstream is at `releases/Arcade-JalecoMS1BCD_20260923.rbf`: 66 % of the
-ALMs, 537 of 553 M10K, **0 timing violations**, and it is the build that
-carries System D (MS1-56) and the lookahead fix (MS1-57).
+The bitstream is at `releases/Arcade-JalecoMS1BCD_20260923.rbf`: 69 % of the
+ALMs, **544 of 553 M10K**, **0 timing violations**. It carries System D
+(MS1-56), the lookahead fix (MS1-57), the video alignment fix (MS1-59) and
+the four OSD features (MS1-39).
+
+MS1-39 is what made the M10K figure tight: 538 -> 544, nine blocks spare. The
+cost is not the high-score and cheat engines themselves -- their tables are
+too small for an M10K and land in LUTs -- but the byte-lane write the back
+door needs on `wram`/`wram_s`. Both still infer as `altsyncram`; that was
+checked with `quartus_map` alone before committing to a full compile, which is
+what MS1-38 exists to say.
 
 **All 16 shipped sets boot on the board** — System B 7 of 7, System C 7 of 7,
 System D 2 of 2 — and the picture is now bit-identical to MAME's: MS1-59 had

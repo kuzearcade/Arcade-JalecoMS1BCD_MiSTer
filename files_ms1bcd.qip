@@ -58,4 +58,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/third_party/fx68k/uaddrPla.sv
 set_global_assignment -name VERILOG_FILE rtl/third_party/jt51/hdl/jt51.v
 set_global_assignment -name VERILOG_FILE rtl/third_party/jt6295/hdl/jt6295.v
 
+# OSD features (MS1-39): Pause needs no file, Flip screen lives in
+# ms1_video.sv, and these two are the high-score and cheat engines. They
+# share the work-RAM back door in ms1_main.sv.
+set_global_assignment -name VERILOG_FILE rtl/third_party/hiscore/hiscore.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cheats.sv
+
 set_global_assignment -name SDC_FILE JalecoMS1BCD.sdc

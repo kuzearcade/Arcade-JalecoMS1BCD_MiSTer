@@ -52,6 +52,7 @@ module ms1_video #(
 
 	input        [1:0]  mode,          // 0 = B, 1 = C, 2 = D
 	input        [1:0]  nlayers,       // 3 for B/C, 2 for D
+	input               osd_flip,      // OSD "Flip screen": 180 degrees
 
 	// video registers
 	input       [15:0]  active_layers,
@@ -104,8 +105,14 @@ module ms1_video #(
 	output reg  [23:0]  rgb,
 	output reg          rgb_valid
 );
-	// ---- flip: mirror the sample point over the visible window
-	wire flip = screen_flag[0];
+	// ---- flip: mirror the sample point over the visible window.
+	// The OSD's "Flip screen" is XORed in here rather than handled
+	// separately: the board's own screen_flag bit 0 already turns the
+	// picture by 180 degrees this way, and the two compose exactly -- a
+	// game that flips itself and a monitor mounted upside down cancel.
+	// Doing it at the sample point means it reaches the analog I/O board
+	// and direct video, not just the HDMI scaler. MS1-39.
+	wire flip = screen_flag[0] ^ osd_flip;
 
 	// The lookahead is applied to the RASTER position, before the flip mirror,
 	// so the fetch order follows the scan whichever way the screen is turned.

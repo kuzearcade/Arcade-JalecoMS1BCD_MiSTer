@@ -62,4 +62,30 @@
   <rom index="1" zip="peekaboo.zip" md5="none">
     <part crc="b40bff56" name="pr-92033.ic69"/>
   </rom>
+
+  <!-- High scores: MAME hiscore.dat entries for peekaboo, and the
+       saved dump. See tools/gen_hiscore_mra.py. -->
+  <rom index="3" md5="none">
+    <part>
+        0C 00 00 00 00 FF 00 02 00 02 00 01 00 FF 02 00
+        00 1F 02 78 00 60 00 FA
+        00 1F 03 80 00 04 00 00
+    </part>
+  </rom>
+  <nvram index="4" size="100"/>
+
+  <!-- Cheats (Pugsy's MAME cheat database). Slots in fixed order:
+       Infinite Credits, P1 Invincibility, P2 Invincibility, P1 Infinite Lives, P2 Infinite Lives, P1 Infinite Bombs, P2 Infinite Bombs.
+       This set provides: P1 Infinite Lives, P2 Infinite Lives. See tools/gen_cheats_mra.py. -->
+  <rom index="5" md5="none">
+    <part>
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        01 00 1F 02 E7 00 00 09 00 00 00 00 00 00
+        01 00 1F 02 E9 00 00 09 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+    </part>
+  </rom>
 </misterromdescription>

@@ -71,4 +71,19 @@
     <!-- pr-91044: MAME BAD_DUMP, a documented substitution; shipped as the best available data. -->
     <part crc="c69423d6" name="pr-91044"/>
   </rom>
+
+  <!-- Cheats (Pugsy's MAME cheat database). Slots in fixed order:
+       Infinite Credits, P1 Invincibility, P2 Invincibility, P1 Infinite Lives, P2 Infinite Lives, P1 Infinite Bombs, P2 Infinite Bombs.
+       This set provides: P1 Infinite Lives, P2 Infinite Lives. See tools/gen_cheats_mra.py. -->
+  <rom index="5" md5="none">
+    <part>
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        01 00 FF CB CF 00 00 09 00 00 00 00 00 00
+        01 00 FF CC 7F 00 00 09 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+    </part>
+  </rom>
 </misterromdescription>

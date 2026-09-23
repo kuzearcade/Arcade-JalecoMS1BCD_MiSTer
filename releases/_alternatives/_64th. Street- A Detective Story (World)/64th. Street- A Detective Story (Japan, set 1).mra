@@ -70,4 +70,29 @@
   <rom index="1" zip="64streetj.zip|64street.zip" md5="none">
     <part crc="c69423d6" name="pr91009.ic155"/>
   </rom>
+
+  <!-- High scores: MAME hiscore.dat entries for 64streetj, and the
+       saved dump. See tools/gen_hiscore_mra.py. -->
+  <rom index="3" md5="none">
+    <part>
+        0C 00 00 00 00 FF 00 02 00 02 00 01 00 FF 02 00
+        00 FF 88 43 00 74 00 43
+    </part>
+  </rom>
+  <nvram index="4" size="116"/>
+
+  <!-- Cheats (Pugsy's MAME cheat database). Slots in fixed order:
+       Infinite Credits, P1 Invincibility, P2 Invincibility, P1 Infinite Lives, P2 Infinite Lives, P1 Infinite Bombs, P2 Infinite Bombs.
+       This set provides: Infinite Credits, P1 Invincibility, P2 Invincibility, P1 Infinite Lives, P2 Infinite Lives. See tools/gen_cheats_mra.py. -->
+  <rom index="5" md5="none">
+    <part>
+        01 00 FF B6 AD 00 00 99 00 00 00 00 00 00
+        01 00 FF 9F 29 00 00 B3 00 00 00 00 00 00
+        01 00 FF 9F 59 00 00 B3 00 00 00 00 00 00
+        01 00 FF 9F 09 00 00 09 00 00 00 00 00 00
+        01 00 FF 9F 33 00 00 09 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00
+    </part>
+  </rom>
 </misterromdescription>

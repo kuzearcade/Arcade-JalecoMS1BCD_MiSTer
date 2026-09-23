@@ -39,6 +39,18 @@ module ms1bcd_core #(
 	// .mra game-mode byte bit 4: sample clock 2 MHz instead of 4. MS1-40.
 	input               oki_2mhz,
 
+	// ---- OSD features (MS1-39). `pause` stops both 68000s and the MCU at
+	// an instruction boundary; `osd_flip` turns the picture 180 degrees
+	// inside the video block; hs_* is the work-RAM back door the high-score
+	// and cheat engines share, which they drive only while paused.
+	input               pause,
+	input               osd_flip,
+	input       [23:0]  hs_addr,
+	input        [7:0]  hs_din,
+	output       [7:0]  hs_dout,
+	input               hs_write,
+	input               hs_access,
+
 	// tile and sprite ROM, served by the caller
 	output      [20:0]  l0_rom_addr, l1_rom_addr, l2_rom_addr,
 	output      [20:0]  l0_rom_use_addr, l1_rom_use_addr, l2_rom_use_addr,
@@ -192,6 +204,9 @@ module ms1bcd_core #(
 		.dbg_romwait(dbg_romwait), .dbg_romacc(dbg_romacc),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
 		.in_dsw2(in_dsw2), .in_system(in_system), .in_sys_hi(in_sys_hi),
+		.pause(pause),
+		.hs_addr(hs_addr), .hs_din(hs_din), .hs_dout(hs_dout),
+		.hs_write(hs_write), .hs_access(hs_access),
 		.oki_we(main_oki_we), .oki_wdata(main_oki_wdata),
 		.oki_bank(main_oki_bank), .oki_status(main_oki_status),
 		.vcount(vcount), .vtick(vtick),
@@ -256,7 +271,7 @@ module ms1bcd_core #(
 	wire [2:0] main_oki_bank;
 
 	ms1_sound u_sound (
-		.clk(clk), .reset(reset), .mode(mode), .oki_2mhz(oki_2mhz),
+		.clk(clk), .reset(reset), .mode(mode), .oki_2mhz(oki_2mhz), .pause(pause),
 		.main_oki_we(main_oki_we), .main_oki_wdata(main_oki_wdata),
 		.main_oki_bank(main_oki_bank), .main_oki_status(main_oki_status),
 		.sreset(r_scf[4] | ss_rst_dbg[0]),   // + the bisection aid
@@ -357,7 +372,7 @@ module ms1bcd_core #(
 		// instantiates m_tmap[0] and m_tmap[1] only, so layer 2 is not
 		// merely disabled but absent, and anything active_layers says about
 		// it must draw nothing.
-		.mode(mode), .nlayers((mode == 2'd2) ? 2'd2 : 2'd3),
+		.mode(mode), .nlayers((mode == 2'd2) ? 2'd2 : 2'd3), .osd_flip(osd_flip),
 		.active_layers(r_act), .sprite_flag(r_sf),
 		.sprite_bank(r_sb), .screen_flag(r_scf),
 		.t0_sx(r0x), .t0_sy(r0y), .t0_ctrl(r0c),

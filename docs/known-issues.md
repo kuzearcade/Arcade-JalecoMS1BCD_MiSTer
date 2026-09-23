@@ -47,7 +47,7 @@ board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57.
 | MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
 | MS1-37 | Nine arrays do not infer as RAM; the core does not fit | closed — every array now block RAM; registers 996504 -> 11630 |
 | MS1-38 | quartus_map catches the MS1-34 driver class that Verilator ignores | closed — run synthesis as a linter from M1, not at M4 |
-| MS1-39 | Four OSD features have no core port, so the top level omits them | **OPEN** — M5 work: Pause, High Scores, Cheats, Flip Screen |
+| MS1-39 | Four OSD features have no core port, so the top level omits them | closed — all four measured on the board; 69 % ALM, 544/553 M10K, timing met |
 | MS1-40 | The .mra's 2 MHz sample-clock bit is decoded but reaches nothing | closed — `oki_2mhz` port on ms1_sound.sv; 48/24 instead of 48/12 |
 | MS1-41 | hayaosi1's three-player panel does not fit the pad or the .mra button list | **OPEN** — buttons 4/5 keyboard-only, player 3 unmapped; peekaboo's four are mapped |
 | MS1-42 | peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 | closed — `in_sys_hi`; System D reads the whole word at 0F0000 |
@@ -1260,26 +1260,146 @@ number to check is the total after `sys/` is added.
 
 ---
 
-## MS1-39 — Four OSD features have no core port, so the top level omits them (OPEN)
+## MS1-39 — Four OSD features have no core port (closed)
 
 `MS1BCD.sv` was adapted from `Arcade-SandScrp_MiSTer/SandScrp.sv`, which wires
-Pause, High Scores, Cheats and Flip Screen into its core. `ms1bcd_core` has no
-port for any of them:
+Pause, High Scores, Cheats and Flip Screen into its core. `ms1bcd_core` had no
+port for any of them, and they were absent from the CONF_STR rather than tied
+to constants -- an OSD entry that does nothing reads as a broken core, not an
+unfinished one.
 
-| feature | what it needs |
-|---|---|
-| Pause | a clock-enable gate over both 68000s and the MCU |
-| High Scores | a work-RAM back door (`hs_addr`/`hs_din`/`hs_dout`/`hs_write`/`hs_access`) |
-| Cheats | the same back door, shared with hiscore |
-| Flip Screen | an `osd_flip` input mirroring the video readback coordinates |
+All four are now in. The shape follows SandScrp's, including the status-bit
+numbers, so the two cores' menus and docs line up.
 
-They are **absent from the CONF_STR**, not wired to constants. An OSD entry
-that does nothing is worse than no entry: it reads as a core that is broken
-rather than one that is unfinished.
+### Pause — `O[29]`
 
-This is M5 work, and it is not free — see the M10K figure in the bring-up
-record. `rtl/third_party/hiscore/hiscore.v` and `rtl/cheats.sv` are both still
-in the tree, unreferenced, ready for it.
+A clock-enable gate over both 68000s and the MCU. **Re-timed onto `enPhi2`**
+rather than masked with the raw bit:
+
+```systemverilog
+reg pause_68k = 1'b0;
+always @(posedge clk) if (enPhi2) pause_68k <= pause;
+```
+
+`enPhi1`/`enPhi2` must strictly alternate or fx68k wedges mid-cycle; gating on
+the raw OSD bit drops whichever half of the pair it lands on. The protection
+MCU pauses with the main CPU -- it is in the middle of a handshake with it --
+and the savestate engine **masks** pause (`& ~ss_busy`), because both CPUs
+have to execute in order to reach the park monitor, so a paused core could
+never be saved.
+
+The YM2151 and the OKIs are deliberately NOT gated. Their cens carry envelope
+and sample phase, and freezing those mid-note is audible on resume where
+letting the note finish is not.
+
+### Flip screen — `O[17]`
+
+One XOR, in `ms1_video.sv`:
+
+```systemverilog
+wire flip = screen_flag[0] ^ osd_flip;
+```
+
+The block already implements the board's own 180-degree flip by mirroring the
+sample point -- and that is not an assumption, the header records MAME
+captured twice from the same point, flipped and not, coming out rot180 of each
+other with zero differing pixels. The OSD bit composes with it exactly: a game
+that flips itself and a monitor mounted upside down cancel. Doing it at the
+sample point also means it reaches the analog I/O board and direct video, not
+only the HDMI scaler.
+
+### High Scores — `O[39]`, `R[30]` save, `R[31]` reset — and Cheats — `O[38:32]`
+
+Both drive one work-RAM back door in `ms1_main.sv`, and only while they have
+the CPUs paused. hiscore wins a collision; it runs on OSD open and cheats on
+vblank, so in practice they never want the port at the same moment.
+
+`hs_addr` is the **68000's own byte address**, as `hiscore.dat` and Pugsy's
+tables write it. Every mode's work RAM is 64 KB aligned, so `hs_addr[15:1]`
+indexes it on all three boards without a per-mode case -- and it lands
+correctly on System B's mirror as well, since `0x078F8B` and `0x068F8B` have
+the same low 16 bits.
+
+**The back door writes ONE byte**, not a mirrored pair:
+
+```systemverilog
+if (~hs_addr[0]) wram[hs_wi][15:8] <= hs_din;
+else             wram[hs_wi][7:0]  <= hs_din;
+```
+
+The work-RAM quirk that mirrors a byte write into both halves belongs to the
+68000's write path (MAME's `ram_w`, "64th Street and Chimera Beast rely on
+this"). Applying it here would corrupt the neighbouring byte of every score.
+Splitting the write into byte lanes was the one real risk in this change --
+`wram` and `wram_s` are 512 Kbit each and MS1-37 was fought over exactly this
+inference -- so synthesis was run as a linter first, per MS1-38. Both still
+infer as `altsyncram`; the only newly uninferred arrays are hiscore's five
+config tables, which are far too small for an M10K and belong in LUTs.
+
+"Reset Scores" needs two hold times from one counter: a short core reset so
+the game rebuilds its table, then ~6 s holding the hiscore module down so it
+cannot write the old scores back over the fresh ones. "Save Scores" has no
+native path in the module -- it only extracts on a RISING edge of
+`OSD_STATUS` -- so the request drives that input low for ~100 ms and lets it
+go.
+
+### The data, and the trap in regenerating it
+
+The core carries seven fixed cheat slots because the CONF_STR is compiled into
+the `.rbf` and shared by all sixteen sets, so a per-game menu of cheat NAMES
+is not expressible; each `.mra` supplies its own game's addresses, and slots a
+game has no cheat for are hidden through `status_menumask`.
+
+| block | source | coverage |
+|---|---|---|
+| `<rom index="3">` + `<nvram index="4">` | MAME `hiscore.dat` | 12 of 16 |
+| `<rom index="5">` | Pugsy's cheat XML | 14 of 16 |
+
+The four without hiscore entries are `64streetja`, `chimeraba`, `edfb` and
+`hayaosi1`; upstream simply has no block for them.
+
+### Measured on the board
+
+Driven headlessly: `/media/fat/config/<setname>.CFG` is the 128-bit OSD status
+word, 16 bytes little-endian, read when the `.mra` is loaded, so each bit can
+be set from the host and judged by its effect on the picture
+(`tools/board_feature_test.py`'s method). `avspirit`, build
+`d3cb996e817354b61eefc17d02b56fde`:
+
+| feature | bit | measurement |
+|---|---|---|
+| Pause | `O[29]` | two shots 8 s apart: **48665** differing pixels off, **0** on |
+| Cheats | `O[32]` | title screen reads **"CREDITS 99"** and "PUSH START BUTTON!" where the baseline read `CREDIT 0` |
+| Flip screen | `O[17]` | picture turned 180 degrees -- `CREDIT 0` mirrored at the top left, the score row upside down at the bottom, energy bar moved from top to bottom |
+| High Scores | `O[39]` | game still runs (57001 differing pixels over 8 s, so no NMK-24 freeze), and the table changes with the dump |
+
+The high-score result is the one worth stating in full, because it is the
+whole path and not just the wiring. Same screen, same delay after load, only
+the dump differing:
+
+| | 1ST | table |
+|---|---|---|
+| no `.nvm` | `100000 JAL` | the game's default ladder, 100000 down to 10000 |
+| a crafted 83-byte `.nvm` | `0` | every entry zeroed, initials blank |
+
+An 83-byte file written on the host reached the game's work RAM through ioctl
+index 4, the hiscore module, the back door and `wram`, and changed what the
+game draws -- which is the route a real saved score takes.
+
+**Pause is the weakest of the four**, and deliberately reported as such: the
+`.CFG` is read at load, so the core boots paused and the screen stays black,
+which shows the CPUs are held but not that a RUNNING picture freezes. The
+cheat result covers that gap -- `rtl/cheats.sv` pauses on vblank, writes, and
+releases, so "CREDITS 99" on a running attract is mid-run pause, the back door
+and the byte-lane write all proven at once.
+
+**`tools/gen_ms1bcd_mra.py` rewrites each `.mra` from scratch, and these
+blocks are added by two post-passes it knows nothing about.** Running it alone
+deleted them, and the result is still perfectly well-formed XML -- which is
+how NMK16 lost 616 lines across 27 files. Worse, both post-passes skip a file
+that already has their block, so re-running them does not put anything back.
+The base generator now carries the blocks over itself (`carry_over()`), and a
+regeneration is idempotent: byte-identical output, verified.
 
 ## MS1-40 — The .mra's 2 MHz sample-clock bit is decoded but reaches nothing (closed)
 

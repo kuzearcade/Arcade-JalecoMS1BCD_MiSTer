@@ -77,6 +77,11 @@ localparam CONF_STR = {
 	// cabinet's monitor can be mounted either way round. Hidden (H0) under
 	// direct video, where the framebuffer path is unavailable.
 	"H0O[9:8],Orientation,Horz,Vert 90,Vert 270;",
+	// Flip screen: 180 degrees, done inside the core by mirroring its own
+	// readback coordinates (ms1_video.sv), so it reaches the analog I/O
+	// board and direct video as well as the HDMI scaler. It composes with
+	// the board's own screen_flag bit 0 rather than overriding it.
+	"O[17],Flip screen,Off,On;",
 	"P3,CRT Adjust;",
 	"P3O[101],CRT Adjust,Off,On;",
 	"P3O[100:96],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
@@ -96,6 +101,27 @@ localparam CONF_STR = {
 	// <switches>/<dip> entries. Changes arrive on ioctl index 254.
 	"DIP;",
 	"-;",
+	"O[29],Pause,Off,On;",
+	"P1,Scores;",
+	"P1O[39],High Scores,Off,On;",
+	"P1-;",
+	// Greyed out (dA -> menumask bit 10) while High Scores is Off.
+	"dAP1R[30],Save Scores;",
+	"dAP1R[31],Reset Scores;",
+	// Seven fixed, well-known cheat slots. The CONF_STR is compiled into the
+	// .rbf and shared by all sixteen sets, so a per-game menu of cheat NAMES
+	// is not expressible: each .mra supplies its own game's addresses for
+	// these slots (tools/gen_cheats_mra.py), and a slot the loaded game has
+	// no cheat for is hidden by its menumask bit (h3..h9 -> ch_avail).
+	"P2,Cheats;",
+	"P2-;",
+	"h3P2O[32],Infinite Credits,Off,On;",
+	"h4P2O[33],P1 Invincibility,Off,On;",
+	"h5P2O[34],P2 Invincibility,Off,On;",
+	"h6P2O[35],P1 Infinite Lives,Off,On;",
+	"h7P2O[36],P2 Infinite Lives,Off,On;",
+	"h8P2O[37],P1 Infinite Bombs,Off,On;",
+	"h9P2O[38],P2 Infinite Bombs,Off,On;",
 	"P4,Savestates;",
 	"P4O[41:40],Slot,1,2,3,4;",
 	"P4-;",
@@ -140,6 +166,8 @@ wire  [26:0] ioctl_addr_full;
 wire   [7:0] ioctl_dout;
 wire         ioctl_wait;
 wire  [15:0] ioctl_index;
+wire         ioctl_upload, ioctl_upload_req;
+wire   [7:0] ioctl_din;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
@@ -154,8 +182,10 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.buttons(buttons),
 	.status(status),
 	// [11] hides Aspect ratio and Scandoubler Fx under direct video;
-	// [0] hides Orientation under direct video. Nothing else is conditional.
-	.status_menumask({4'd0, direct_video, 10'd0, direct_video}),
+	// [10] greys out Save/Reset Scores while High Scores is Off;
+	// [9:3] hide the cheat slots the loaded .mra has no cheat for;
+	// [0] hides Orientation under direct video.
+	.status_menumask({4'd0, direct_video, hs_enable, ch_avail, 2'd0, direct_video}),
 	.status_in({status[127:42], ss_slot, status[39:0]}),
 	.status_set(ss_status_update),
 	.info_req(ss_info_req),
@@ -172,6 +202,10 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
 	.ioctl_index(ioctl_index),
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(ioctl_upload_req),
+	.ioctl_upload_index(8'd4),
+	.ioctl_din(ioctl_din),
 
 	.ps2_key(ps2_key)
 );
@@ -257,7 +291,19 @@ always @(posedge clk_sys) begin
 end
 wire wait_switches = ~sw_seen & ~&sw_tmo;
 
-wire reset = RESET | status[0] | buttons[1] | ioctl_download | dl_settling | wait_switches | ~pll_locked;
+// "Reset Scores" needs two different hold times from ONE counter: the core
+// gets a short reset so the game re-initialises its table, and the hiscore
+// module is held down for ~6 s afterwards so it does not immediately write
+// the old scores back over the fresh ones. SandScrp's chain, same numbers.
+reg [28:0] hs_rst_cnt = 29'd0;
+always @(posedge clk_sys) begin
+	if (status[31])       hs_rst_cnt <= 29'd288000000;   // ~6 s at 48 MHz
+	else if (|hs_rst_cnt) hs_rst_cnt <= hs_rst_cnt - 1'b1;
+end
+wire hs_hold     = |hs_rst_cnt;
+wire hs_core_rst = (hs_rst_cnt > 29'd283000000);         // core reset, first ~0.1 s
+
+wire reset = RESET | status[0] | buttons[1] | ioctl_download | dl_settling | wait_switches | ~pll_locked | hs_core_rst;
 
 // The ROM loader's reset, and it is NOT the one above. ms1bcd_rom_hw IS the
 // download: it has to keep working through the very window `reset` covers.
@@ -727,6 +773,86 @@ ms1bcd_rom_hw rom_hw (
 // between ss_addr and the ss_rdata it samples), so the engine sees exactly
 // what every round-trip measurement so far has seen.
 // ---------------------------------------------------------------------------
+// ------------------------------------------------------------------
+// High scores (rtl/third_party/hiscore) and cheats (rtl/cheats.sv) share the
+// one work-RAM back door in the core, which they only drive while they have
+// the CPUs paused. hiscore wins a collision: it runs on OSD open and cheats
+// on vblank, so in practice they never want the port at the same moment.
+// MS1-39.
+// ------------------------------------------------------------------
+wire [23:0] hs_addr;
+wire  [7:0] hs_din, hs_dout;
+wire        hs_write, hs_access, hs_configured;
+wire [23:0] hi_addr;
+wire  [7:0] hi_din;
+wire        hi_write;
+wire        hs_pause_raw, hs_upload_req_raw;
+wire        hs_enable = status[39];
+wire        hs_active = hs_enable & ~hs_hold;
+wire        hs_pause  = hs_pause_raw & hs_active;
+// "Save Scores" has no native path in the module: it only extracts on a
+// RISING edge of OSD_STATUS, so the request drives that input low and lets
+// it go again.
+reg  [23:0] hs_save_cnt = 24'd0;
+always @(posedge clk_sys) begin
+	if (status[30])        hs_save_cnt <= 24'd4800000;   // ~100 ms at 48 MHz
+	else if (|hs_save_cnt) hs_save_cnt <= hs_save_cnt - 1'b1;
+end
+wire hs_saving = |hs_save_cnt;
+wire hs_osd = OSD_STATUS & ~hs_saving & hs_active;
+assign ioctl_upload_req = hs_upload_req_raw & hs_active;
+
+hiscore #(
+	.HS_ADDRESSWIDTH(24),
+	.HS_SCOREWIDTH(8),       // 256 bytes of capture, more than any of the 16
+	.CFG_ADDRESSWIDTH(4),    // up to 16 hiscore.dat records
+	.CFG_LENGTHWIDTH(2)
+) hi (
+	.clk(clk_sys),
+	.reset(reset | hs_hold | ~hs_enable),
+	.paused(hs_pause_raw),
+	.autosave(1'b1),
+	.OSD_STATUS(hs_osd),
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(hs_upload_req_raw),
+	.ioctl_download(ioctl_download),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_index(ioctl_index[7:0]),
+	.data_from_hps(ioctl_dout),
+	.data_to_hps(ioctl_din),
+	.data_from_ram(hs_dout),
+	.data_to_ram(hi_din),
+	.ram_address(hi_addr),
+	.ram_write(hi_write),
+	.ram_intent_read(),
+	.ram_intent_write(),
+	.pause_cpu(hs_pause_raw),
+	.configured(hs_configured)
+);
+
+wire [23:0] ch_addr;
+wire  [7:0] ch_din;
+wire        ch_write, ch_access, ch_pause;
+wire  [6:0] ch_avail;
+
+cheats ch (
+	.clk(clk_sys),
+	.reset(reset),
+	.ioctl_download(ioctl_download), .ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr), .ioctl_index(ioctl_index), .ioctl_dout(ioctl_dout),
+	.enable(status[38:32]),
+	.available(ch_avail),
+	.vblank(vblank_core),
+	.ram_addr(ch_addr), .ram_din(ch_din), .ram_write(ch_write),
+	.ram_access(ch_access), .pause_cpu(ch_pause)
+);
+
+assign hs_addr   = hs_pause ? hi_addr  : ch_addr;
+assign hs_din    = hs_pause ? hi_din   : ch_din;
+assign hs_write  = hs_pause ? hi_write : ch_write;
+assign hs_access = hs_pause ? 1'b1     : ch_access;
+
 wire  [1:0] ss_slot;
 wire  [7:0] ss_info;
 wire        ss_save, ss_load, ss_info_req, ss_status_update;
@@ -783,6 +909,12 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 
 	.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1), .in_dsw2(in_dsw2), .in_system(in_system),
 	.in_sys_hi(in_sys_hi), .oki_2mhz(oki_2mhz),
+	// The savestate engine masks pause: both CPUs have to EXECUTE in order
+	// to reach the park monitor, so a paused core can never be saved.
+	.pause((status[29] | hs_pause | ch_pause) & ~ss_busy),
+	.osd_flip(status[17]),
+	.hs_addr(hs_addr), .hs_din(hs_din), .hs_dout(hs_dout),
+	.hs_write(hs_write), .hs_access(hs_access),
 
 	.l0_rom_addr(l0_rom_addr), .l1_rom_addr(l1_rom_addr), .l2_rom_addr(l2_rom_addr),
 	.l0_rom_use_addr(l0_use_addr), .l1_rom_use_addr(l1_use_addr), .l2_rom_use_addr(l2_use_addr),

@@ -45,6 +45,11 @@ module ms1_sound (
 	// MAME's hayaosi1 comment calls 2 MHz the "correct speed, but unknown
 	// OSC + divider combo"; system_D derives it as XTAL(8'000'000)/4. MS1-40.
 	input               oki_2mhz,
+	// OSD Pause, re-timed onto enPhi2 in the same way the main CPU's is.
+	// The YM and the OKIs are deliberately NOT gated: their cens carry the
+	// envelope and sample phase, and freezing those mid-note is audible on
+	// resume where letting the note finish is not. MS1-39.
+	input               pause,
 
 	// ---- System D: the main CPU owns OKI 1 (see the header).
 	input               main_oki_we,     // one pulse per main-CPU write
@@ -120,6 +125,8 @@ module ms1_sound (
 	// ran 3.3x fast -- see MS1-28. Any width here must hold CLK_SYS itself.
 	reg [26:0] cpu_acc;
 	reg        cpu_ph;
+	reg        pause_68k = 1'b0;
+	always @(posedge clk) if (enPhi2) pause_68k <= pause;
 	reg        enPhi1, enPhi2;
 	always @(posedge clk) begin
 		enPhi1 <= 1'b0; enPhi2 <= 1'b0;
@@ -511,7 +518,7 @@ module ms1_sound (
 
 	fx68k u_scpu (
 		.clk(clk), .HALTn(1'b1), .extReset(cpu_rst), .pwrUp(cpu_rst),
-		.enPhi1(enPhi1), .enPhi2(enPhi2),
+		.enPhi1(enPhi1 & ~pause_68k), .enPhi2(enPhi2 & ~pause_68k),
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),
 		.oRESETn(oRESETn), .oHALTEDn(oHALTEDn),

@@ -362,6 +362,24 @@ def buttons_xml(setname):
     dflt  = BUTTON_DEFAULTS.get(setname, 'Y,B,A,Start,R')
     return f'  <buttons names="{names}" default="{dflt}"/>'
 
+# The blocks tools/gen_hiscore_mra.py and tools/gen_cheats_mra.py add, which
+# this generator must preserve rather than overwrite. Matched on the comment
+# each writes, through to the end of its element.
+CARRY_RE = re.compile(
+    r'\n  <!-- (?:High scores|Cheats).*?</rom>\n(?:  <nvram index="4"[^/]*/>\n)?',
+    re.S)
+
+
+def carry_over(path):
+    """The hiscore/cheat sections of an existing .mra, verbatim, or ''."""
+    if not os.path.exists(path):
+        return ''
+    try:
+        old = open(path, encoding='utf-8').read()
+    except OSError:
+        return ''
+    return ''.join(CARRY_RE.findall(old))
+
 # ---------------------------------------------------------------- check
 def build_stream(setname, byname, bycrc, strict_names):
     """The index-0 byte stream exactly as the core will receive it."""
@@ -507,8 +525,21 @@ def main():
         else:
             d = RELEASES
         os.makedirs(d, exist_ok=True)
-        open(os.path.join(d, fn), 'w', encoding='utf-8').write(mra(setname))
-        print('wrote', os.path.relpath(os.path.join(d, fn), ROOT))
+        path = os.path.join(d, fn)
+        # CARRY OVER THE BLOCKS THIS GENERATOR DOES NOT OWN. The high-score
+        # (index 3 + nvram 4) and cheat (index 5) sections are added by
+        # tools/gen_hiscore_mra.py and tools/gen_cheats_mra.py as a post-pass,
+        # from data this table knows nothing about. Rewriting the file from
+        # scratch silently deletes them, and the .mra still looks perfectly
+        # well-formed afterwards -- NMK16 lost 616 lines across 27 files that
+        # way. Both post-passes skip a file that already has their block, so
+        # re-running them is not enough to put these back. MS1-39.
+        keep = carry_over(path)
+        open(path, 'w', encoding='utf-8').write(
+            mra(setname).replace('</misterromdescription>',
+                                 keep + '</misterromdescription>'))
+        print('wrote', os.path.relpath(path, ROOT),
+              '(+ carried hiscore/cheat blocks)' if keep else '')
 
 if __name__ == '__main__':
     main()
