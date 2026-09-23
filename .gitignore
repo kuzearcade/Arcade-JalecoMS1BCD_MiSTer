@@ -174,3 +174,11 @@ sim/rtl/ms1bcd_hw/frames/
 sim/rtl/ms1bcd/*.raw
 sim/rtl/ms1bcd_hw/*.raw
 sim/rtl/*/roms/*.bin
+
+# releases/ mirrored with the OSD Autofire menu unlocked (<switches> byte 2
+# bit 7 -- bit 7 and not the sibling cores' bit 6, because bits 6:5 of that
+# byte are this core's protection field). Only the three shoot-'em-up
+# families, same layout, same file names -- written by
+# tools/gen_autofire_mra.py, never committed or deployed by the release
+# scripts. Regenerate it whenever releases/ changes.
+/autofire_releases/

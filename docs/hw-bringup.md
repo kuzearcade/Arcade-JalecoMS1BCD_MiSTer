@@ -100,15 +100,36 @@ entry that does nothing reads as broken, not unfinished:
 | feature | why | issue |
 |---|---|---|
 | Pause | no clock-enable gate on the core | MS1-39 |
-| High Scores | no work-RAM back door | MS1-39 |
-| Cheats | same back door | MS1-39 |
-| Flip Screen | no `osd_flip` input | MS1-39 |
+| High Scores | no work-RAM back door | MS1-39, **closed** |
+| Cheats | same back door | MS1-39, **closed** |
+| Flip Screen | no `osd_flip` input | MS1-39, **closed** |
 
-Autofire **is** present, and unlike the sibling cores it is always visible:
-those hide it behind bit 6 of the `.mra`'s third `<switches>` byte, and on this
-board that byte is the game-mode byte with bits 6:5 already spoken for.
-`tools/gen_autofire_mra.py` is inherited from the sibling and still sets bit 6;
-it must not be run against this project's `releases/` tree.
+Autofire is hidden (`h1`) unless the loaded `.mra`'s third `<switches>` byte
+sets **bit 7**, and `tools/gen_autofire_mra.py` writes the
+`autofire_releases/` tree that sets it -- the same two-tree arrangement the
+sibling cores use.
+
+**Bit 7, where the siblings use bit 6.** On this board that byte is the
+game-mode byte and bits 6:5 are the protection field, so setting bit 6 would
+not unlock a menu: it would tell the core the game has a different protection
+device, hold the real MCU in reset and break it. The layout is `[1:0]` mode,
+`[4]` sample clock, `[6:5]` protection, with `[3:2]` and `[7]` spare. The
+generator was inherited from NMK16 and still set bit 6 until it was rewritten
+for this core; running the old one against this `releases/` tree would have
+been actively harmful, not merely useless.
+
+Measured on the board: `cybattlr` with byte 2 = `01` and with `81` renders the
+same attract, 57084 lit pixels either way, so the unlock bit is inert to the
+mode, protection and sample-clock decode. The menu's *visibility* is not
+screenshot-testable -- MiSTer's `screenshot` captures the core's video without
+the OSD overlay -- so that half rests on the `h1` prefix and
+`status_menumask` bit 1 being wired to `dip_sw[2][7]`, which is a two-line
+path.
+
+Only the three shoot-'em-up families get a copy (`Cybattler`, `Chimera Beast`,
+`E.D.F.`, with their `_alternatives`). Autofire costs button 3 for the player
+using it, which is a bad trade on a belt-scroller, a football game, a quiz
+panel or a paddle game.
 
 ## Inputs: three layouts from one byte
 

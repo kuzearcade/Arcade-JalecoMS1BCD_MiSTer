@@ -91,11 +91,18 @@ localparam CONF_STR = {
 	"P3O[108],CRT V-Size Mode,PVM,Cabinet;",
 	// Autofire on button 1, clocked by the game's own vblank. While a player
 	// has it on, that player's button 3 is a plain button 1 and no longer
-	// reaches the game. Always visible here: the sibling cores hide this
-	// behind bit 6 of the .mra's third <switches> byte, and on this board that
-	// byte is the game-mode byte with bits 6:5 already spoken for.
-	"O[12:10],P1 Autofire,Off,10Hz,12Hz,15Hz,20Hz,30Hz;",
-	"O[15:13],P2 Autofire,Off,10Hz,12Hz,15Hz,20Hz,30Hz;",
+	// reaches the game -- bigstrik and the astyanax-family sets do use button
+	// 3, so that trade is real.
+	//
+	// Hidden (h1) unless the loaded .mra's third <switches> byte sets bit 7.
+	// The sibling cores use bit 6 for this; on this board that byte is the
+	// game-mode byte and bits 6:5 are the protection field, so setting bit 6
+	// here would not unlock a menu, it would tell the core the game has a
+	// different protection device and break it. Bit 7 is the free one:
+	// [1:0] mode, [4] sample clock, [6:5] protection, [3:2] and [7] spare.
+	// tools/gen_autofire_mra.py writes the tree that sets it.
+	"h1O[12:10],P1 Autofire,Off,10Hz,12Hz,15Hz,20Hz,30Hz;",
+	"h1O[15:13],P2 Autofire,Off,10Hz,12Hz,15Hz,20Hz,30Hz;",
 	"-;",
 	// Where MiSTer inserts the DIP submenu it builds from the .mra's own
 	// <switches>/<dip> entries. Changes arrive on ioctl index 254.
@@ -184,8 +191,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	// [11] hides Aspect ratio and Scandoubler Fx under direct video;
 	// [10] greys out Save/Reset Scores while High Scores is Off;
 	// [9:3] hide the cheat slots the loaded .mra has no cheat for;
+	// [1] shows the Autofire options, from <switches> byte 2 bit 7;
 	// [0] hides Orientation under direct video.
-	.status_menumask({4'd0, direct_video, hs_enable, ch_avail, 2'd0, direct_video}),
+	.status_menumask({4'd0, direct_video, hs_enable, ch_avail, 1'b0, autofire_unlock, direct_video}),
 	.status_in({status[127:42], ss_slot, status[39:0]}),
 	.status_set(ss_status_update),
 	.info_req(ss_info_req),
@@ -368,6 +376,9 @@ wire [1:0] prot_sel = dip_sw[2][6:5];
 // it -- MAME overrides hayaosi1's OKIs to 2 MHz ("correct speed, but unknown
 // OSC + divider combo") and derives System D's as XTAL(8MHz)/4. MS1-8/MS1-40.
 wire       oki_2mhz = dip_sw[2][4];
+// Bit 7 of the same byte: show the OSD's Autofire options. Not a board
+// signal at all -- it reaches nothing but status_menumask.
+wire       autofire_unlock = dip_sw[2][7];
 
 // ------------------------------------------------------------------
 // Keyboard: MAME's own default bindings, always live, ORed with the pads.
