@@ -55,7 +55,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-44 | The mode byte fans out further than any other signal and is timed as data | closed — reset tail + false path; -2.153 ns -> passing |
 | MS1-45 | The sound harness stopped building, then stopped running, and said neither | closed — two stale inputs; ym=0 looked like healthy silence |
 | MS1-46 | Two .mra names contain a colon, which no FAT filesystem accepts | closed — generator sanitises; tar had half-installed the tree |
-| MS1-47 | MiSTer never sends an empty `<switches>` block, so the mode byte never arrives | **OPEN** — needs real `<dip>` entries; mode read 3 and every ROM base fell through to System D |
+| MS1-47 | MiSTer never sends an empty `<switches>` block, so the mode byte never arrives | closed — real DIP tables extracted from `mame -listxml`; verified booting on the board |
 | MS1-48 | A failed Quartus compile leaves the previous .rbf and reports through a zero exit | closed — build.sh greps the log, not the exit code |
 | MS1-49 | The .mra shipped the 68000 image byte-swapped, and --check validated it against itself | closed — MEASURED on hardware; my first diagnosis had it backwards |
 | MS1-50 | Both 68000s handed the ROM cache their raw bus address | closed — held while the bus is not selecting ROM; SS-12 and NMK-21 are the same bug |
@@ -1723,3 +1723,69 @@ third `<switches>` byte the core needs before it can run -- which here is all
 17 of them. It is also MS1-47's other half: that entry is about MiSTer never
 *sending* an empty block, this one about the core not *waiting* for a block
 that is sent.
+
+
+## MS1-47 — MiSTer never sends an empty `<switches>` block (closed)
+
+The generator emitted
+
+```xml
+  <switches default="FF,FF,00">
+  </switches>
+```
+
+for all 17 sets. MiSTer only sends the index-254 session when that element has
+`<dip>` children, so the block never arrived, `dip_sw[2]` kept its idle `FF`,
+`mode` read 3, and every ROM base fell through the `(B : C : D)` mux to System
+D. Adding a single throwaway `<dip>` was enough to prove the mechanism during
+bring-up; this closes it properly.
+
+### The DIP tables come from MAME, not from reading the driver
+
+`tools/extract_ms1_dips.py` runs `mame -listxml` per set and writes
+`tools/ms1_dipdata.py`. Using MAME's own output rather than parsing
+`megasys1.cpp` means `PORT_INCLUDE`, `PORT_MODIFY` and the `COINAGE_8BITS`
+macro are already resolved, and each setting's default is marked -- all of
+which a hand parser would have to re-derive.
+
+Three things the conversion has to get right, each of which has bitten a
+sibling project:
+
+- **`bits` is a RANGE**, `"first,last"`. Writing the individual bit numbers
+  makes MiSTer read the field at the wrong width (NMK16 shipped `1C_1C` showing
+  as `1C_4C` that way).
+- **`ids` are indexed by the field's RAW value, value 0 first**, and must be
+  2^width long with no holes. So an active-low `PORT_SERVICE` comes out
+  `"On,Off"`, not `"Off,On"`.
+- **System D has one 16-bit `DSW` port**, not `DSW1`/`DSW2`. It maps at bit
+  offset 0 across both bytes; handled explicitly, and peekaboo went from 0
+  switches to 10 once it was.
+
+MAME lists only distinct settings, so a field can have fewer entries than
+2^width. Across all 17 sets that happens only on the 4-bit Coin A / Coin B,
+where the driver's own commented-out lines (`COINAGE_8BITS`) show values 1-5
+are duplicates of `1C_1C`. Those are filled from that fact; anything else is
+filled with `Undefined` and **reported**, so a new gap cannot pass silently.
+Re-running the extractor reports none.
+
+### It also fixes the defaults, which were simply wrong
+
+The flat `FF,FF` was not MAME's default for most sets:
+
+| set | was | MAME |
+|---|---|---|
+| avspirit, monkelf, 64street x3 | FF,FF | FF,**FD** |
+| chimerab, chimeraba | FF,FF | **BD**,FF |
+| cybattlr | FF,FF | FF,**BF** |
+
+### Verified
+
+All 16 shipped `.mra` parse, every one carries `<dip>` entries, and every id
+list is exactly 2^width long. The ROM streams are byte-identical to before
+(`--check` clean on all 17). On the board, `avspirit` boots and runs its
+attract mode through a `.mra` carrying the real generated block -- the same
+file the repository ships, with only its `zip=` pointed at the test set,
+because this board's own `avspirit.zip` has no MCU in it.
+
+**Not verified:** that the OSD's DIP submenu renders and cycles correctly.
+That needs driving the OSD on the board and reading it back.

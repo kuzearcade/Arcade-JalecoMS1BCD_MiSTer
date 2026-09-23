@@ -22,7 +22,15 @@
   <category>Arcade</category>
   <rbf>JalecoMS1BCD</rbf>
 
-  <switches default="FF,FF,01">
+  <switches default="BD,FF,01">
+    <dip bits="0" name="Flip Screen" ids="On,Off"/>
+    <dip bits="1" name="Demo Sounds" ids="On,Off"/>
+    <dip bits="2" name="Allow Continue" ids="Off,On"/>
+    <dip bits="3,4" name="Difficulty" ids="Hardest,Hard,Easy,Normal"/>
+    <dip bits="5,6" name="Lives" ids="4,3,1,2"/>
+    <dip bits="7" name="Service Mode" ids="On,Off"/>
+    <dip bits="8,11" name="Coin A" ids="Free_Play,1C_1C,1C_1C,1C_1C,1C_1C,1C_1C,2C_3C,4C_1C,3C_1C,2C_1C,1C_6C,1C_5C,1C_4C,1C_3C,1C_2C,1C_1C"/>
+    <dip bits="12,15" name="Coin B" ids="Free_Play,1C_1C,1C_1C,1C_1C,1C_1C,1C_1C,2C_3C,4C_1C,3C_1C,2C_1C,1C_6C,1C_5C,1C_4C,1C_3C,1C_2C,1C_1C"/>
   </switches>
 
   <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>

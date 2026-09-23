@@ -23,7 +23,17 @@
   <rbf>JalecoMS1BCD</rbf>
   <rotation>vertical (cw)</rotation>
 
-  <switches default="FF,FF,01">
+  <switches default="FF,BF,01">
+    <dip bits="0,2" name="Coin A" ids="4C_1C,3C_1C,2C_3C,2C_1C,1C_4C,1C_3C,1C_2C,1C_1C"/>
+    <dip bits="3,5" name="Coin B" ids="4C_1C,3C_1C,2C_3C,2C_1C,1C_4C,1C_3C,1C_2C,1C_1C"/>
+    <dip bits="6" name="Free Play" ids="On,Off"/>
+    <dip bits="7" name="Service Mode" ids="On,Off"/>
+    <dip bits="8,9" name="Difficulty" ids="Very Hard,Hard,Easy,Normal"/>
+    <dip bits="10" name="Disable Instruction Screen" ids="On,Off"/>
+    <dip bits="11,12" name="Allow Continue" ids="Off,Not on Final Mission,Up to Mission 4,On"/>
+    <dip bits="13" name="Intro Music" ids="Off,On"/>
+    <dip bits="14" name="Demo Sounds" ids="On,Off"/>
+    <dip bits="15" name="Flip Screen" ids="On,Off"/>
   </switches>
 
   <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>

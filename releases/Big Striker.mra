@@ -23,6 +23,14 @@
   <rbf>JalecoMS1BCD</rbf>
 
   <switches default="FF,FF,01">
+    <dip bits="0,3" name="Coin A" ids="Free_Play,1C_1C,1C_1C,1C_1C,1C_1C,1C_1C,2C_3C,4C_1C,3C_1C,2C_1C,1C_6C,1C_5C,1C_4C,1C_3C,1C_2C,1C_1C"/>
+    <dip bits="4,7" name="Coin B" ids="Free_Play,1C_1C,1C_1C,1C_1C,1C_1C,1C_1C,2C_3C,4C_1C,3C_1C,2C_1C,1C_6C,1C_5C,1C_4C,1C_3C,1C_2C,1C_1C"/>
+    <dip bits="8" name="Flip Screen" ids="On,Off"/>
+    <dip bits="9,10" name="Difficulty" ids="Hardest,Easy,Hard,Normal"/>
+    <dip bits="11,12" name="Time" ids="Very Short,Long,Short,Normal"/>
+    <dip bits="13" name="Demo Sounds" ids="Off,On"/>
+    <dip bits="14" name="1 Credit 2 Play" ids="On,Off"/>
+    <dip bits="15" name="Service Mode" ids="On,Off"/>
   </switches>
 
   <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>

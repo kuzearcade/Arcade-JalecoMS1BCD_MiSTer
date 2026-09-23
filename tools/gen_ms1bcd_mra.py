@@ -22,7 +22,7 @@ write port on ms1_prio.sv, because it is read per pixel and belongs in block
 RAM, and because keeping it a separate index makes "is any PROM data compiled
 into the bitstream?" a question with an obvious answer (docs/PLAN.md 2.3).
 """
-import argparse, os, sys, zipfile, zlib
+import argparse, os, re, sys, zipfile, zlib
 from xml.sax.saxutils import escape as _xml_escape
 
 
@@ -252,6 +252,41 @@ def prom_xml(setname):
 MODE_ID = {'B': 0x00, 'C': 0x01, 'D': 0x02}
 PROT_ID = {'mcu': 0x00, 'iosim': 0x20, 'none': 0x40, 'peekaboo': 0x60}
 
+from ms1_dipdata import DIPDATA
+
+# MAME spells coinage out ("1 Coin/2 Credits"); the OSD is narrow, and the
+# sibling NMK16 .mra files use the compact form, so display it that way. Only
+# the LABEL changes -- bit positions and order come from MAME.
+_COIN = re.compile(r'^(\d+) Coins?/(\d+) Credits?$')
+
+def dip_id(name):
+    if name == 'Free Play':
+        return 'Free_Play'
+    m = _COIN.match(name)
+    return f'{m.group(1)}C_{m.group(2)}C' if m else name
+
+def switches_xml(setname, cfg):
+    """The <switches> block: MAME's own defaults, and one <dip> per switch.
+
+    MiSTer needs at least one <dip> here. With an EMPTY <switches> element it
+    never sends the block at all, so the third byte -- the game-mode byte this
+    core cannot run without -- never reaches the core and `mode` reads its idle
+    3 (MS1-47). The DIP submenu is also a feature in its own right; it had
+    never been populated.
+
+    `bits` is a RANGE, "first,last". Writing out the individual bit numbers
+    instead makes MiSTer read the field at the wrong width.
+    """
+    e = DIPDATA[setname]
+    out = [f'  <switches default="{e["dsw1"]:02X},{e["dsw2"]:02X},{cfg:02X}">\n']
+    for d in e['dips']:
+        lo, hi = d['bits']
+        bits = f'{lo}' if lo == hi else f'{lo},{hi}'
+        ids = ','.join(x(dip_id(i)) for i in d['ids'])
+        out.append(f'    <dip bits="{bits}" name="{x(d["name"])}" ids="{ids}"/>\n')
+    out.append('  </switches>\n')
+    return ''.join(out)
+
 def mra(setname):
     e, ex = ROMDATA[setname], EXTRA[setname]
     lay, total = layout(e['mode'])
@@ -281,9 +316,7 @@ def mra(setname):
   <category>Arcade</category>
   <rbf>JalecoMS1BCD</rbf>
 {'  <rotation>vertical (cw)</rotation>' + chr(10) if e['rot'] == 90 else ''}
-  <switches default="FF,FF,{cfg:02X}">
-  </switches>
-
+{switches_xml(setname, cfg)}
   <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>
 
   <rom index="0" zip="{mra_zip_attr(setname)}" md5="none">
