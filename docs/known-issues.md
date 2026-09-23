@@ -2052,3 +2052,56 @@ remap: a wrong priority table scrambles which layer wins, and it does not.
 **Not verified:** the scroll fixups against MAME frame by frame. The picture
 is positioned correctly by eye, but the thresholds (0x0d / 0x0b) have not been
 exercised against a reference capture.
+
+
+## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55
+
+Every shipped set whose board this core implements now boots on the
+DE10-Nano at 192.168.1.138 and draws its attract mode. Three screenshots per
+set, 10 s apart, 70 s after load, through the `.mra` files the repository
+ships with only `zip=` repointed at a test set repacked from `mame_roms/`
+(the board's own collection is a merged set with MAME's older member names,
+and no MCU in `avspirit.zip` at all).
+
+**System B, 7 of 7**
+
+| set | protection | screenshots |
+|---|---|---|
+| avspirit | mcu | 4599 2116 12349 |
+| edf | mcu | 8183 12781 12107 |
+| edfa | mcu | 8154 12592 12087 |
+| edfb | mcu | 4281 13171 10821 |
+| edfu | mcu | 7953 12781 12087 |
+| monkelf | none | 4599 1582 16350 |
+| hayaosi1 | iosim | 21917 18971 19079 |
+
+**System C, 7 of 7**
+
+| set | protection | screenshots |
+|---|---|---|
+| 64street | mcu | 15640 17537 16700 |
+| 64streetj | mcu | 34089 33253 37409 |
+| 64streetja | mcu | 34089 33253 38988 |
+| bigstrik | mcu | 847 13035 1968 |
+| chimerab | mcu | 20259 19792 24503 |
+| chimeraba | iosim | 18235 21449 23488 |
+| cybattlr | mcu | 10286 9972 41853 |
+
+Spot-checked by eye: 64th Street's attract story with its portraits and
+dialogue, Cybattler's mecha over cratered terrain (text rendered sideways,
+which is right -- the core outputs the board's native ROT90 raster and the
+rotation happens in the framebuffer downstream), and bigstrik on the Jaleco
+copyright screen, which is why two of its three samples are nearly black.
+
+**System D, 0 of 2.** `peekaboo` and `peekaboou` do not run and are not
+expected to: `mode == 2` still falls into the `~is_c` branch in
+`ms1_main.sv`, which is System B's memory map. PLAN 2.5 is unstarted.
+MS1-42 (the 16-bit SYSTEM port) and the paddle sit behind that.
+
+### What this does and does not establish
+
+It establishes that each board's ROM layout, protection model, memory map,
+raster and video pipeline are right enough to boot and animate. It says
+nothing about frame accuracy (only `avspirit` has a reference comparison,
+and `hayaosi1`'s does not match -- see MS1-54), nothing about sound on
+hardware, and nothing about inputs, savestates or the rest of the M4 gates.
