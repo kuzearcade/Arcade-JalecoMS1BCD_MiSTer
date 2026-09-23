@@ -100,7 +100,12 @@ int main(int argc, char **argv) {
 		const int W = 256, H = 224;
 		top.prot = envu("TB_PROT", 0);
 		top.in_p1 = envu("TB_P1", 0xFF); top.in_p2 = envu("TB_P2", 0xFF);
-		top.in_system = 0xFF;
+		// TB_SYS drives the SYSTEM port for the whole run; 0xBE holds coin 1
+		// and start 1 on the generic layout, which is enough to coin up and
+		// start a game so the sprite engine sees a real scene rather than an
+		// attract screen. The sprite pass length scales with the number of
+		// sprites drawn, and that is what the MS1-60 budget turns on.
+		top.in_system = envu("TB_SYS", 0xFF);
 		top.in_sys_hi = envu("TB_SYSHI", 0xFF);
 		top.in_dsw1 = envu("TB_DSW1", 0xFF); top.in_dsw2 = envu("TB_DSW2", 0xFD);
 		std::vector<std::vector<uint32_t>> frames;

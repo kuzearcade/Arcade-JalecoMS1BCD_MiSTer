@@ -4,8 +4,9 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Four are open**: two from M0 answerable off-board, MS1-31 which needs the
-board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57.
+**Five are open**: two from M0 answerable off-board, MS1-31 which needs the
+board, MS1-33 from M3, and MS1-60, the sprite-pass beam race. MS1-32 closed
+as a misdiagnosis of MS1-57.
 
 | | | |
 |---|---|---|
@@ -67,6 +68,7 @@ board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57.
 | MS1-56 | System D has no memory map: `mode == 2` falls into System B's | closed — map, 2 layers, 555 palette, own protection, main-CPU OKI |
 | MS1-57 | The tile-fetch lookahead wrapped on the visible width, not the whole line | closed — every SDRAM-path line began with 8 pixels from column 128; the reference sim runs LOOKAHEAD 0 and could not see it |
 | MS1-58 | The sim Makefiles do not depend on the RTL verilator finds through `-y` | closed — `RTLSRC` wildcard; a fix in ms1_video.sv left the old binary in place and the next run re-measured the bug |
+| MS1-60 | The sprite pass overruns blanking by ~15 rows, so the top of the plane is read while it is still being drawn | **OPEN** — measured 212970 clk against a 165888 clk budget on cybattlr; the fix is costed, not applied |
 | MS1-59 | Every game shows a five-pixel strip down the left of the screen | closed — the core's pixel lags its raster position by 5; measured 5 px -> 0 px against MAME on the board |
 
 ---
@@ -2580,6 +2582,110 @@ depends on each core's own pixel-pipeline depth, which is different code and
 has not been measured. The method that settled it here is cheap and transfers
 directly: capture the same static attract screen on the board and in MAME,
 then scan shifts 0..8 for the one that gives zero differing pixels.
+
+## MS1-60 — the sprite pass overruns blanking, and the beam reads the plane while it is still being drawn (OPEN)
+
+Reported from the board: **enemy sprites disappear on the right of the screen
+in Cybattler, but never on the left.** Cybattler is the only ROT90 set and is
+played in Orientation "Vert 90", the clockwise case, so the display's right
+edge is the NATIVE RASTER'S TOP -- native `y = 0` maps to display `x = W-1`,
+native `y = 223` to display `x = 0`. A defect confined to the top of the
+native raster can only appear on one side of a rotated screen, which is
+exactly the shape of the report.
+
+### The race
+
+`rtl/jaleco/ms1_sprites.sv` keeps **one** sprite plane. `plane_e` and
+`plane_d` are two identical copies written by the same `pl_we` on the same
+clock -- they exist to give the engine and the display a read port each, not
+to hold two frames. The pass clears all 65536 entries and redraws them,
+starting at `vblank_rise`, while the video reads that same plane as the beam
+scans it.
+
+The display reads plane row `by = my + VIS_Y0`, and with `my = vcount - 16`
+that is simply `by = vcount`: **plane row R is read at `vcount == R`**, for R
+in 16..239. So the pass has from `vblank_rise` (row 240) to `vcount == 16` to
+have finished row 16 -- 54 rows.
+
+```
+frame                                   854016 clk   (384 x 278 x 8)
+one row                                   3072 clk
+vblank_rise -> first displayed plane row  165888 clk  (54 rows)
+
+measured longest pass, sim/rtl/ms1_hw:
+  avspirit    211992 clk    overrun 46104 clk = 15.0 rows
+  peekaboo    213703 clk    overrun 47815 clk = 15.6 rows
+  cybattlr    212970 clk    overrun 47082 clk = 15.3 rows
+```
+
+**The overrun is structural, not scene-dependent.** The engine blits all
+16x16 pixels of every object entry and only uses `on_screen` to gate the
+WRITE, so the cost is fixed whatever is on screen:
+
+```
+clear                    65536
+256 objects x 512      131072
+                       ------
+                       196608  + per-sprite overhead ~= 213k
+```
+
+That is why the three games agree to within 1.7k clocks, and why `cybattlr`
+measured the same on a coined-up run as `avspirit` does in its attract. Every
+frame of every game is exposed; what varies is only whether a sprite that
+lands in the top ~15 rows happens to be drawn late in the pass order. The
+pass does finish inside the frame, so `dbg_late_swaps` stays 0 and nothing
+flags it.
+
+### MAME cannot do this
+
+`draw_sprites()` is called from inside `screen_update()`, which renders the
+whole sprite bitmap before the frame is presented. There is no beam, so there
+is nothing to race. Like MS1-57 and MS1-59 this is a hardware-path artifact
+that a frame comparison only catches if it happens to fire on a captured
+frame.
+
+### What was and was not reproduced
+
+Honest state: **the mechanism is proven, the symptom is not.** 1800 MAME
+frames were captured (`MS1_SKIP` 0 and 1200) and 24 board screenshots matched
+against them. Seven aligned cleanly and every one was **pixel-identical to
+MAME, top band included**:
+
+```
+board t4 -> MAME f1401   0 differing pixels      t5 -> f1523   0
+      t6 -> MAME f1577   0                       t7 -> f1571   0
+      t8 -> MAME f1565   0                       t10-> f2091   0
+      t9 -> MAME f1976  35   (none in the top 16 rows)
+```
+
+Those are attract screens. In them no late-ordered sprite lands in the top
+band, so the race is armed but silent. Driving real gameplay on the board and
+aligning it against MAME is not possible -- play is not reproducible frame for
+frame -- so the pixel-level demonstration is still missing, and this entry
+stays OPEN until there is one.
+
+### The fix, costed
+
+**Double-buffering the plane is not affordable.** Each copy is 576 Kbit and
+the fit is at 544 of 553 M10K.
+
+The lever is the clear: 65536 clk, 21.3 rows, a third of the pass and more
+than the whole overrun. Remove it from the pass and the pass is ~147434 clk,
+inside the 165888 budget with 6 rows to spare, at no memory cost:
+
+- **Clear behind the beam.** Plane row R is read at `vcount == R`, so it is
+  free from `vcount == R+1`. Clearing one row is 256 entries out of the 3072
+  clocks in a row, so it fits easily alongside the display read.
+- **Tighten `on_screen` from `py in [0,256)` to `py in [16,240)`**, which is
+  MAME's cliprect exactly (`min_y` 16, `max_y` 239). Rows 0..15 and 240..255
+  are then never written, so they never need clearing and the behind-beam
+  sweep covers the whole plane.
+- Drop `S_CLEAR`, and with it the `clr` counter from the savestate.
+
+A second, data-dependent saving is available and is what MAME would do: skip
+the blit entirely for an object that is wholly off-screen. MAME has exactly
+that test written at `megasys1_v.cpp:381` and commented out. It does not
+guarantee the budget on its own, so it is a supplement, not the fix.
 
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 
