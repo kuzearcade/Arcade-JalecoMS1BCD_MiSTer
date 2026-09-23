@@ -17,6 +17,8 @@ module ms1bcd_core #(
 	input               clk,           // 48 MHz
 	input               reset,
 	input        [1:0]  mode,          // 0 = B, 1 = C
+	// .mra game-mode byte bits 6:5: 0 real MCU, 1 simulated, 2 none, 3 D's own.
+	input        [1:0]  prot,
 
 	output      [18:0]  rom_addr,
 	input       [15:0]  rom_data,
@@ -165,7 +167,7 @@ module ms1bcd_core #(
 	wire [15:0] r0x, r0y, r0c, r1x, r1y, r1c, r2x, r2y, r2c;
 
 	ms1_main u_main (
-		.clk(clk), .reset(reset), .mode(mode),
+		.clk(clk), .reset(reset), .mode(mode), .prot(prot),
 		.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_main_rdata),

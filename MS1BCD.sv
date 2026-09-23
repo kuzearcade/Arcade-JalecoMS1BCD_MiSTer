@@ -745,7 +745,7 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	// The CPUs are held in reset for the whole download and until the SDRAM
 	// controller is up, so no cache can be asked for a byte that is not there.
 	.reset(reset | ~sdram_ready | aud_en),
-	.mode(mode),
+	.mode(mode), .prot(prot_sel),
 
 	.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 	.mcu_rom_addr(mcu_rom_addr), .mcu_rom_data(mcu_rom_data), .mcu_rom_ready(mcu_rom_ready),

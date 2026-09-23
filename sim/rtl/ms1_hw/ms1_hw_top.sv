@@ -13,6 +13,7 @@ module ms1_hw_top (
 	input         clk_ram,        // SDRAM controller clock
 	input         reset,
 	input  [1:0]  mode,
+	input  [1:0]  prot,
 
 	// ioctl download
 	input         ioctl_download,
@@ -119,7 +120,7 @@ module ms1_hw_top (
 	wire core_reset = reset | ioctl_download | ~sdram_ready | audit_en;
 
 	ms1bcd_core #(.LOOKAHEAD(8)) u_core (
-		.clk(clk_sys), .reset(core_reset), .mode(mode),
+		.clk(clk_sys), .reset(core_reset), .mode(mode), .prot(prot),
 		// Debug-only bisection aid, explicitly off here: an unconnected reset
 		// input is not something to leave to the tool's x-assign policy.
 		.ss_rst_dbg(4'd0),

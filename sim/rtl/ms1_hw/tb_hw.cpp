@@ -97,6 +97,7 @@ int main(int argc, char **argv) {
 	// ---- frames: run the core on the SDRAM path and dump what it paints.
 	if (nfr) {
 		const int W = 256, H = 224;
+		top.prot = envu("TB_PROT", 0);
 		top.in_p1 = 0xFF; top.in_p2 = 0xFF; top.in_system = 0xFF;
 		top.in_dsw1 = envu("TB_DSW1", 0xFF); top.in_dsw2 = envu("TB_DSW2", 0xFD);
 		std::vector<std::vector<uint32_t>> frames;

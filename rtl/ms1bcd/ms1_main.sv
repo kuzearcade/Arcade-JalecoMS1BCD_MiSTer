@@ -43,6 +43,9 @@ module ms1_main (
 	input               clk,
 	input               reset,
 	input        [1:0]  mode,          // 0 = B, 1 = C
+	// Protection, from the .mra's game-mode byte bits 6:5:
+	//   0 real MCU, 1 simulated (iosim), 2 none, 3 System D's own.
+	input        [1:0]  prot,
 
 	// program ROM, served by the caller (512 KB, word addressed)
 	output      [18:0]  rom_addr,
@@ -157,6 +160,19 @@ module ms1_main (
 
 	// ------------------------------------------------------------- decode
 	wire is_c = (mode == 2'd1);
+
+	// ---- simulated protection (prot == 1): state and the per-game command
+	// table. The responder itself is further down, with the rest of the
+	// protection logic; these are up here because the savestate readback and
+	// the CPU read mux both need them. See that block for what the table is.
+	wire       use_iosim = (prot == 2'd1);
+	wire [7:0] io_c0 = is_c ? 8'h56 : 8'h51;
+	wire [7:0] io_c3 = is_c ? 8'h55 : 8'h54;
+	wire [7:0] io_c4 = is_c ? 8'h54 : 8'h55;
+	wire [7:0] io_c5 = is_c ? 8'hFA : 8'hFC;
+	reg  [7:0] io_latched;
+	reg        io_irq2;
+	reg        io_int1_d;
 
 	// THE GLOBAL ADDRESS MASK IS PART OF THE DECODE. MAME's maps open with
 	// map.global_mask(0xfffff) on System B and 0x1fffff on System C, and the
@@ -365,6 +381,7 @@ module ms1_main (
 			4'd3: ss_misc_rdata = {13'd0, mdiv};
 			4'd4: ss_misc_rdata = {13'd0, phdiv};
 			4'd5: ss_misc_rdata = {14'd0, phase, as_d};
+			4'd6: ss_misc_rdata = {7'd0, io_int1_d, io_latched};
 			default: ss_misc_rdata = 16'h0000;
 		endcase
 	end
@@ -586,7 +603,12 @@ module ms1_main (
 	assign reg_t2_sy         = sh_t2y;
 	assign reg_t2_ctrl       = sh_t2c;
 
-	wire [7:0] prot_rd;
+
+	wire [7:0] mcu_prot_rd;
+	// prot == 2 (none) reads back 0, which is what MAME's iosim state does
+	// with no command table installed: the latch is never written.
+	wire [7:0] prot_rd = (prot == 2'd1) ? io_latched
+	                   : (prot == 2'd0) ? mcu_prot_rd : 8'h00;
 	always @* begin
 		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
 		else if (sel_rom)  rdat = rom_data;
@@ -625,6 +647,7 @@ module ms1_main (
 	wire mcu_cen_tick = (mdiv == mdiv_max);
 
 	wire mcu_irq2;
+	wire prot_irq2 = use_iosim ? io_irq2 : mcu_irq2;
 	wire [3:0] mcu_dbg_bank;
 	wire mcu_dbg_rd;
 	// INT1 is display enable: high over the visible rows (MS1-19)
@@ -636,10 +659,71 @@ module ms1_main (
 		else prot_we_pulse <= we & sel_prot;
 	wire prot_we_edge = (we & sel_prot) & ~prot_we_pulse;
 
+	// ---- simulated protection (prot == 1), MAME's ip_select_w()
+	//
+	// A per-game table of seven command bytes. Writing one of them latches the
+	// input it names, or a fixed reply, and raises IRQ2. Anything else latches
+	// NOTHING and raises NOTHING -- MAME returns early, and a game that polls
+	// with a junk command must see no answer and no interrupt.
+	//
+	//   index      0       1    2    3     4     5      6
+	//              SYSTEM  P1   P2   DSW1  DSW2  0x0d   0x06
+	//   hayaosi1   51      52   53   54    55    FC     06     (System B)
+	//   chimeraba  56      52   53   55    54    FA     06     (System C)
+	//
+	// hayaosi1 is the only System B set that uses iosim and chimeraba the only
+	// System C one, so `is_c` picks the table exactly -- no extra .mra field.
+	// Indices 5 and 6 answer with CONSTANTS 0x0d and 0x06; it is the COMMAND
+	// that differs per game, not the reply.
+	wire [7:0] io_cmd = oEdb[7:0];         // MAME masks the word to its low byte
+
+	// IRQ2 has TWO sources on a simulated board, and MAME models both:
+	//
+	//  * the RASTER, at scanline 16. megasys1BC_scanline (the non-MCU
+	//    callback) does `if (scanline == 0 + 16) set_input_line(2, HOLD_LINE)`.
+	//    On an MCU board the very same edge is routed to the MCU's INT1
+	//    instead -- megasys1BC_iomcu_scanline -- which is why this source
+	//    exists only here. Without it hayaosi1 never leaves its boot loop:
+	//    it sits in STOP #$2100 at 0x0018EA waiting for IRQ2, takes the
+	//    level-4 vector instead, and the protection command at 0x001902 is
+	//    never reached, so no command ever arrives to raise IRQ2 the other
+	//    way. Found by diffing the bus against MAME: identical for 79
+	//    accesses, then MAME fetches vector 0x68 and this core fetched 0x70.
+	//
+	//  * a VALID command write, from ip_select_w, below.
+	always @(posedge clk) begin
+		io_int1_d <= int1;
+		io_irq2 <= 1'b0;
+		// 0x06, not 0. MAME's device_reset does the same, with the reason:
+		// "reset protection - some games expect this initial read without
+		// sending anything". hayaosi1 is one of them: its first protection
+		// access is a READ, before any command, and it compares the result
+		// against 6.
+		if (reset) io_latched <= 8'h06;
+		// Restored HERE, in the block that owns it (MS1-34).
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd6)) begin
+			io_latched <= ss_wdata[7:0];
+			io_int1_d  <= ss_wdata[8];
+		end
+		else if (use_iosim & int1 & ~io_int1_d) io_irq2 <= 1'b1;
+		else if (use_iosim & prot_we_edge) begin
+			if      (io_cmd == io_c0)  begin io_latched <= in_system; io_irq2 <= 1'b1; end
+			else if (io_cmd == 8'h52)  begin io_latched <= in_p1;     io_irq2 <= 1'b1; end
+			else if (io_cmd == 8'h53)  begin io_latched <= in_p2;     io_irq2 <= 1'b1; end
+			else if (io_cmd == io_c3)  begin io_latched <= in_dsw1;   io_irq2 <= 1'b1; end
+			else if (io_cmd == io_c4)  begin io_latched <= in_dsw2;   io_irq2 <= 1'b1; end
+			else if (io_cmd == io_c5)  begin io_latched <= 8'h0D;     io_irq2 <= 1'b1; end
+			else if (io_cmd == 8'h06)  begin io_latched <= 8'h06;     io_irq2 <= 1'b1; end
+		end
+	end
+
 	ms1_iomcu u_mcu (
-		.clk(clk), .cen(mcu_cen_tick), .reset(reset | ss_rst_dbg[0]),
+		// Held in reset unless it IS the protection: on an iosim or a
+		// bootleg set the .mra ships a zero-filled MCU region, and 0x00 is
+		// NOP, so letting it run just burns cycles and answers nothing.
+		.clk(clk), .cen(mcu_cen_tick), .reset(reset | ss_rst_dbg[0] | (prot != 2'd0)),
 		.host_we(prot_we_edge), .host_data(oEdb[7:0]),
-		.mcu_data(prot_rd), .main_irq2(mcu_irq2),
+		.mcu_data(mcu_prot_rd), .main_irq2(mcu_irq2),
 		.int1(int1),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
 		.in_dsw2(in_dsw2), .in_system(in_system),
@@ -685,7 +769,7 @@ module ms1_main (
 		if (reset) begin dbg_irq2 <= 0; dbg_int1e <= 0; int1_dd <= 0; end
 		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) int1_dd <= ss_wdata[2];
 		else begin
-			if (mcu_irq2) dbg_irq2 <= dbg_irq2 + 1;
+			if (prot_irq2) dbg_irq2 <= dbg_irq2 + 1;
 			int1_dd <= int1;
 			if (int1 & ~int1_dd) dbg_int1e <= dbg_int1e + 1;
 		end
@@ -705,7 +789,7 @@ module ms1_main (
 		else begin
 			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
 			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
-			if (mcu_irq2)                  irq2_h <= 1'b1;
+			if (prot_irq2)                 irq2_h <= 1'b1;
 			// MS1-23 says one acknowledge CYCLE retires exactly one interrupt.
 			// It must also retire one of the GAME's interrupts only. The
 			// savestate park raises level 7 and is acknowledged like any

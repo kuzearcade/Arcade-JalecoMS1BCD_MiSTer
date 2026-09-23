@@ -62,7 +62,8 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-51 | System B's second ROM bank was mapped one whole bank too far | closed — `{2'b10,...}` was word +0x40000 where the region wants word +0x20000 |
 | MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
 | MS1-53 | The core ran before the .mra's <switches> arrived, with `mode` at its idle 3 | closed — reset now waits for index 254, not for a fixed tail |
-| MS1-54 | The .mra's protection field reaches nothing: the core always runs the real MCU | **OPEN** — 5 of 7 System B sets boot on hardware; monkelf and hayaosi1 do not |
+| MS1-54 | The .mra's protection field reaches nothing: the core always runs the real MCU | closed for iosim — hayaosi1 and chimeraba boot; monkelf is MS1-55 |
+| MS1-55 | monkelf needs direct input ports, a ROM patch and a PROM rebuild, not a protection model | **OPEN** — the bootleg has no protection device at all |
 
 ---
 
@@ -1860,3 +1861,116 @@ replies. So:
    this needs checking against MAME rather than assuming the port is unused.
 
 `oki_2mhz` is in the same position: decoded in the top, no core port (MS1-40).
+
+
+## MS1-54 addendum — the iosim path, and the two things the table alone did not cover
+
+`prot[1:0]` now reaches the core from the `.mra` game-mode byte, the MCU is
+held in reset whenever it is not the selected protection, and `prot == 1`
+answers the port from MAME's `ip_select_w` table:
+
+| index | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| returns | SYSTEM | P1 | P2 | DSW1 | DSW2 | 0x0d | 0x06 |
+| hayaosi1 (B) | 51 | 52 | 53 | 54 | 55 | FC | 06 |
+| chimeraba (C) | 56 | 52 | 53 | 55 | 54 | FA | 06 |
+
+hayaosi1 is the only System B set using iosim and chimeraba the only System C
+one, so `is_c` picks the table -- no new `.mra` field. An unmatched command
+latches nothing **and raises no IRQ**, as MAME's early return does.
+
+That table on its own left hayaosi1 exactly as dead as before. Diffing the
+68000 bus against MAME found both missing pieces, and neither is in the table:
+
+**1. IRQ2 comes from the RASTER, at scanline 16.** MAME has two scanline
+callbacks for B/C. The MCU one routes that edge to the MCU's INT1; the
+**non-MCU** one raises IRQ2 on the main CPU directly:
+
+```c
+TIMER_DEVICE_CALLBACK_MEMBER(megasys1BC_scanline)
+{
+    megasys1bc_handle_scanline_irq(scanline);   // 240 -> IRQ4, 96 -> IRQ1
+    if (scanline == 0 + 16)
+        m_maincpu->set_input_line(2, HOLD_LINE);
+}
+```
+
+Without it hayaosi1 sits in `STOP #$2100` at 0x0018EA waiting for IRQ2, takes
+the level-4 vector instead, and never reaches the code at 0x001902 that sends
+a command -- so no command ever arrives to raise IRQ2 the other way. The
+traces were identical for **79** accesses and then MAME fetched vector 0x68
+where this core fetched 0x70.
+
+**2. The latch resets to 0x06, not 0.** MAME's own comment is the whole
+explanation:
+
+```c
+m_ip_latched = 0x0006; /* reset protection - some games expect this initial
+                          read without sending anything */
+```
+
+hayaosi1 is one of them: its first protection access is a **read**, before any
+command, and it compares the result against 6. With the latch at 0 the traces
+agreed for **96** accesses and diverged on exactly that read.
+
+### Result
+
+| | bus accesses agreeing with MAME |
+|---|---:|
+| table only | 79 |
+| + raster IRQ2 | 96 |
+| + latch resets to 0x06 | **41,587** |
+
+On hardware, with the `.mra` files the repository ships (only `zip=` repointed
+at a test set): **hayaosi1** runs its attract -- three contestant panels, a
+Japanese quiz question, answer choices, INSERT COIN -- and **chimeraba** runs
+its demo with the creature sprite, instruction text and DNA status bar.
+`avspirit` and `edf` are unchanged on the board (4599/2116 and 7953/12781,
+the same sizes as before), and the reference frame comparison for `avspirit`
+is byte-identical before and after.
+
+**Still open:** hayaosi1's frames do not match MAME's reference capture (0 of
+120 exact). The bus runs 41,587 accesses in lockstep first, so this is a later
+divergence rather than a failure to boot, and MAME flags this machine
+`MACHINE_IMPERFECT_GRAPHICS` in the first place (PLAN open question 8).
+
+## MS1-55 — monkelf needs ports, a patch and a PROM rebuild, not a protection model (OPEN)
+
+Grouped with MS1-54 at first as "prot = none". It is not: the bootleg has no
+protection device, and MAME gives it a different memory map and two init-time
+fixups.
+
+```c
+void megasys1_state::megasys1B_monkelf_map(address_map &map)
+{
+    megasys1B_map(map);
+    map(0x044200, 0x044205).w(FUNC(monkelf_scroll0_w));
+    map(0x044208, 0x04420d).w(FUNC(monkelf_scroll1_w));
+    map(0x0e0002, 0x0e0003).portr("P1");
+    map(0x0e0004, 0x0e0005).portr("P2");
+    map(0x0e0006, 0x0e0007).portr("DSW1");
+    map(0x0e0008, 0x0e0009).portr("DSW2");
+    map(0x0e000a, 0x0e000b).portr("SYSTEM");
+}
+
+void megasys1_state::init_monkelf()
+{
+    m_rom_maincpu[0x00744/2] = 0x4e71; // weird check, 0xe000e R is a port-based trap?
+    // convert bootleg priority format to standard
+    ...
+}
+```
+
+So it needs, in order of where the work lands:
+
+1. **Direct input reads at 0x0E0002-0x0E000B** -- core work, and a fifth
+   decode case rather than a protection model.
+2. **A ROM patch**, `0x00744` to `0x4E71`. `.mra` can do this with `<patch>`.
+3. **A rebuilt priority PROM** -- the bootleg's format is nibble-packed and
+   MAME expands it at init. This can be done in the generator so the `.mra`
+   ships the converted table.
+4. **Its own scroll register writes** at 0x044200/0x044208.
+
+`prot == 2` currently reads the port back as 0, which is what MAME's iosim
+state does with no command table installed, and is enough to keep the core
+well-defined -- but it is not enough to run the game.

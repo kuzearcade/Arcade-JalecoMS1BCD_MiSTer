@@ -61,6 +61,9 @@ int main(int argc, char **argv) {
 	top->in_system = strtol(argv[8], nullptr, 16) & 0xFF;
 	top->reset = 1; top->clk = 0;
 	top->oki_status_real = 0;   // MAME's default: oki_status_r returns 0
+	// Protection model, as the .mra game-mode byte bits 6:5 encode it:
+	// 0 real MCU (default, every set with a dumped TMP91640), 1 simulated.
+	top->prot = envl("MS1_PROT", 0);
 	// The reference sim serves every ROM from a zero-latency array, so every
 	// handshake is permanently satisfied. This is the baseline the hardware
 	// path is compared against.
