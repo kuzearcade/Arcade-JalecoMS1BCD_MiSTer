@@ -61,6 +61,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-50 | Both 68000s handed the ROM cache their raw bus address | closed — held while the bus is not selecting ROM; SS-12 and NMK-21 are the same bug |
 | MS1-51 | System B's second ROM bank was mapped one whole bank too far | closed — `{2'b10,...}` was word +0x40000 where the region wants word +0x20000 |
 | MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
+| MS1-53 | The core ran before the .mra's <switches> arrived, with `mode` at its idle 3 | closed — reset now waits for index 254, not for a fixed tail |
 
 ---
 
@@ -1650,3 +1651,75 @@ with irq2=3874, identically -- and the 70-frame frame comparison is unchanged
 before and after. It is kept because it is a real divergence from the
 reference model that was documented as a known gap, and MS1 is the first user
 to put those two interrupt sources on the critical path.
+
+
+## MS1-53 — The core ran before the <switches> arrived, with `mode` at its idle 3 (closed)
+
+With MS1-51 fixed, `avspirit` ran to its attract mode in simulation and on the
+board -- but only in bitstreams built with `DBG_AUDIT = 1`. With the debug
+instruments off, the same RTL drew a 256x224 frame of pure black.
+
+### The bisect
+
+Three builds, one flag at a time, each loaded on the board:
+
+| build | DBG_OVERLAY | DBG_AUDIT | result |
+|---|---|---|---|
+| A | 1 | 1 | attract runs (high-score table) |
+| B | 0 | 0 | black, 6 samples identical |
+| C | 0 | 0, 0.35 s reset tail | black, 3 samples identical |
+| D | **0** | **1** | attract runs (4599 / 2116 / 11552 bytes, changing) |
+
+D is the one that matters: the overlay is irrelevant, the audit is not. The
+audit's only side effect on the core is that it holds it in **reset** for the
+~0.56 s it takes to walk the ROM regions.
+
+### The cause
+
+The `.mra` sends `<switches>` as a **separate ioctl session on index 254,
+after** the ROM on index 0, and the gap between the two is however long MiSTer
+takes to reopen the `.mra` and the zip -- measurably longer than 0.35 s. Until
+those three bytes land, `dip_sw[2]` reads its idle `FF`, so `mode` is 3, which
+the ROM-base mux resolves to **System D's bases on a System B game**. The core
+spent that gap fetching from the wrong addresses, and did not recover when the
+switches finally arrived and reset it.
+
+`DBG_AUDIT = 1` hid it by accident, holding the core in reset across the gap.
+
+### The fix, and two wrong guesses before it
+
+Reset now waits for the switches to actually **arrive**, not for a duration:
+
+```systemverilog
+always @(posedge clk_sys) begin
+    if (ioctl_download) begin
+        sw_tmo <= 28'd0;
+        if (ioctl_wr && ioctl_index == 16'd254) sw_seen <= 1'b1;
+    end else if (~&sw_tmo) sw_tmo <= sw_tmo + 1'd1;
+end
+wire wait_switches = ~sw_seen & ~&sw_tmo;
+```
+
+with a 2.8 s timeout so a `.mra` carrying no `<switches>` block still boots.
+
+Two attempts missed first, both from reasoning instead of bisecting:
+
+1. **A longer fixed tail.** `dl_settling` was widened from 255 cycles to 2^24
+   (0.35 s). Still black -- the gap is longer than that, and no fixed number is
+   the right answer to "wait until a thing happens".
+2. **A stale `config/dips/*.dip`.** MiSTer copies a saved `.dip` over the whole
+   switches value including byte 2, which would have explained it. Checked on
+   the board: no such file existed.
+
+### Verified on hardware
+
+Both instruments off, `avspirit` through `AVSTEST.mra`: the attract mode runs
+and animates -- the ranking table, then the story sequence with its character
+portraits and text, four screenshots of changing content. The same build that
+was uniformly black before this change.
+
+**This is a top-level bug, not a core one**, and it applies to any `.mra` whose
+third `<switches>` byte the core needs before it can run -- which here is all
+17 of them. It is also MS1-47's other half: that entry is about MiSTer never
+*sending* an empty block, this one about the core not *waiting* for a block
+that is sent.

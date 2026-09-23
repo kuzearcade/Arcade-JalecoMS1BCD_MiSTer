@@ -206,14 +206,57 @@ pll pll
 // a ~34 ns path that has had one 20.8 ns cycle to settle. 255 clk_sys cycles
 // (5.3 us) puts that beyond argument and is what lets JalecoMS1BCD.sdc call
 // dip_sw a false path.
-reg [7:0] dl_tail = 8'hFF;
+// The tail restarts on EVERY ioctl session, so the core stays in reset until
+// 0.35 s after the LAST one ends. It has two jobs, and the second is why it is
+// this long rather than the 255 cycles it started as:
+//
+//  1. dip_sw can take its final value on the last cycle of a session, and
+//     `mode` fans out far enough that a ~34 ns path would get one 20.8 ns
+//     cycle to settle. Any tail covers that.
+//
+//  2. The .mra sends <switches> as a SEPARATE session on index 254, AFTER the
+//     ROM on index 0, with a gap of milliseconds between them. A 255-cycle
+//     (5.3 us) tail let the core come out of reset in that gap and run with
+//     `mode` still at its idle 3 -- System D's bases on a System B game --
+//     until index 254 arrived and reset it again. It booted anyway when a
+//     long debug hold happened to cover the gap, and drew nothing when that
+//     hold was removed, which is how this was found (MS1-53).
+reg [23:0] dl_tail = {24{1'b1}};
 always @(posedge clk_sys) begin
-	if (ioctl_download)        dl_tail <= 8'd0;
-	else if (dl_tail != 8'hFF) dl_tail <= dl_tail + 8'd1;
+	if (ioctl_download)              dl_tail <= 24'd0;
+	else if (dl_tail != {24{1'b1}})  dl_tail <= dl_tail + 1'd1;
 end
-wire dl_settling = (dl_tail != 8'hFF);
+wire dl_settling = (dl_tail != {24{1'b1}});
 
-wire reset = RESET | status[0] | buttons[1] | ioctl_download | dl_settling | ~pll_locked;
+// ...and hold until the <switches> block has actually ARRIVED, however long
+// the loader takes to get to it.
+//
+// A fixed tail cannot do this job: the gap between the index-0 ROM session and
+// the index-254 switches session is however long MiSTer takes to reopen the
+// .mra and the zip, and measurably longer than the 0.35 s above. Until those
+// bytes land, `mode` reads its idle 3, which selects System D's ROM bases on a
+// System B game -- so the core spends that gap fetching from the wrong
+// addresses, and does not recover when the switches finally reset it.
+//
+// This was found the hard way: the core booted only in builds where the
+// golden-byte audit (DBG_AUDIT) happened to hold it in reset for ~0.56 s, and
+// drew nothing in builds where that hold was absent. Bisected on the board,
+// one flag at a time. MS1-53.
+//
+// The timeout exists so a .mra with NO <switches> block still boots, after
+// 2.8 s, with mode at its idle value. It restarts while a session is running,
+// so it measures the quiet gap after the last one.
+reg         sw_seen  = 1'b0;
+reg  [27:0] sw_tmo   = 28'd0;
+always @(posedge clk_sys) begin
+	if (ioctl_download) begin
+		sw_tmo <= 28'd0;
+		if (ioctl_wr && ioctl_index == 16'd254) sw_seen <= 1'b1;
+	end else if (~&sw_tmo) sw_tmo <= sw_tmo + 1'd1;
+end
+wire wait_switches = ~sw_seen & ~&sw_tmo;
+
+wire reset = RESET | status[0] | buttons[1] | ioctl_download | dl_settling | wait_switches | ~pll_locked;
 
 // The ROM loader's reset, and it is NOT the one above. ms1bcd_rom_hw IS the
 // download: it has to keep working through the very window `reset` covers.
@@ -489,7 +532,7 @@ wire [31:0] dbg_dl_bytes, dbg_prom_bytes;
 // The core is held in reset for the whole walk (see the core's reset below),
 // which is what lets rom_hw mux the audit address in without fighting it.
 // ---------------------------------------------------------------------------
-localparam DBG_AUDIT = 1;
+localparam DBG_AUDIT  = 0;   // 1 walks the ROM regions through the real caches at boot
 wire [15:0] audit_data;
 wire        audit_ready;
 reg         aud_en   = 1'b0;
@@ -843,7 +886,7 @@ crt_chain #(
 //   6  any PROM byte taken  14  reset
 //   7  switches seen (254)  15  sdram_ready has EVER been low
 // ------------------------------------------------------------------
-localparam DBG_OVERLAY = 1;   // 1 paints the bring-up overlay over the top 144 lines
+localparam DBG_OVERLAY = 0;   // 1 paints the bring-up overlay over the top 144 lines
 
 // clk_sys liveness and core liveness, carried into clk_vid by toggle flags.
 reg [20:0] dbg_syscnt = 0;
