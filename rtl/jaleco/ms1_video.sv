@@ -32,6 +32,10 @@ module ms1_video #(
 	parameter integer VIS_W = 256,
 	parameter integer VIS_H = 224,
 	parameter integer VIS_Y0 = 16,     // first visible bitmap row
+	// The WHOLE raster line, blanking included -- 384 at 6 MHz. The tile
+	// fetch runs through blanking too, so the lookahead has to wrap on this
+	// and not on VIS_W. See the wrap below; getting it wrong is MS1-57.
+	parameter integer TOTAL_W = 384,
 	// Pixels of lookahead on the tile fetch. 0 is the reference sim and is
 	// bit-for-bit the original pipeline. On the SDRAM path the tile byte comes
 	// from a cache, and the raster cannot wait for a miss, so the sample point
@@ -105,9 +109,29 @@ module ms1_video #(
 
 	// The lookahead is applied to the RASTER position, before the flip mirror,
 	// so the fetch order follows the scan whichever way the screen is turned.
+	//
+	// IT WRAPS ON THE WHOLE LINE, NOT ON THE VISIBLE WINDOW. The fetch runs
+	// on every pixel tick, blanking included, and each layer's result is held
+	// LOOKAHEAD ticks in the delay line inside ms1_tilemap -- so the pixel
+	// displayed at column x is the one FETCHED LOOKAHEAD ticks earlier, and
+	// for x < LOOKAHEAD that tick was in the PREVIOUS line's blanking.
+	//
+	// Wrapping on VIS_W put those ticks at columns 128..135 of the new row
+	// instead of 0..7: with VIS_W = 256 and LOOKAHEAD = 8, hcount 376 gives
+	// 376 + 8 - 256 = 128. Every visible line then began with eight pixels
+	// lifted from the middle of itself. It is invisible wherever columns
+	// 0..7 and 128..135 happen to agree, which is most of a tiled
+	// background, and it is 54 pixels of peekaboo's title screen. MS1-57.
+	//
+	// On the whole line the arithmetic lands where it should: hcount 376..383
+	// gives 384..391 - 384 = 0..7 of the next row, which is exactly what
+	// hcount 0..7 will display. The fetches at hcount 248..375 address
+	// columns 256..383, past the end of the visible row; their results fall
+	// in blanking and are discarded, the same as the old code's re-fetch of
+	// columns 8..135 was.
 	wire [9:0] vx_sum = {1'b0, vx} + LOOKAHEAD[9:0];
-	wire       vx_wrap = vx_sum >= VIS_W[9:0];
-	wire [8:0] vxa = vx_wrap ? (vx_sum - VIS_W[9:0]) : vx_sum[8:0];
+	wire       vx_wrap = vx_sum >= TOTAL_W[9:0];
+	wire [8:0] vxa = vx_wrap ? (vx_sum - TOTAL_W[9:0]) : vx_sum[8:0];
 	wire [8:0] vya = vx_wrap ? ((vy == VIS_H[8:0] - 9'd1) ? 9'd0 : vy + 9'd1) : vy;
 
 	// The DISPLAYED point: the sprite plane's readback still uses this, since

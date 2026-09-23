@@ -32,6 +32,8 @@ module ms1_hw_top (
 
 	// inputs + video, for the frames gate
 	input  [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
+	input  [7:0]  in_sys_hi,        // System D's high SYSTEM byte
+	input         oki_2mhz,
 	output [23:0] rgb,
 	output        rgb_valid,
 	output        ce_pix_o,
@@ -108,7 +110,8 @@ module ms1_hw_top (
 	wire  [7:0] c_l0_data, c_l1_data, c_l2_data;
 	wire        c_l0_ready, c_l1_ready, c_l2_ready;
 	wire [21:0] c_spr_addr; wire [7:0] c_spr_data; wire c_spr_ready;
-	wire [17:0] c_oki1_addr, c_oki2_addr;
+	wire [19:0] c_oki1_addr;
+	wire [17:0] c_oki2_addr;
 	wire  [7:0] c_oki1_data, c_oki2_data;
 	wire        c_oki1_stall, c_oki2_stall;
 	wire  [8:0] c_prom_addr; wire [7:0] c_prom_data;
@@ -128,7 +131,7 @@ module ms1_hw_top (
 		.mcu_rom_addr(c_mcu_addr), .mcu_rom_data(c_mcu_data),
 		.mcu_rom_ready(c_mcu_ready),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1), .in_dsw2(in_dsw2),
-		.in_system(in_system),
+		.in_system(in_system), .in_sys_hi(in_sys_hi), .oki_2mhz(oki_2mhz),
 		.l0_rom_addr(c_l0_addr), .l1_rom_addr(c_l1_addr), .l2_rom_addr(c_l2_addr),
 		.l0_rom_use_addr(c_l0_use), .l1_rom_use_addr(c_l1_use),
 		.l2_rom_use_addr(c_l2_use),

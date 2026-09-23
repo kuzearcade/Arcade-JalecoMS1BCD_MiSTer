@@ -531,6 +531,26 @@ per-mode decode table and the hard-wired-to-zero OKI bank register — go in fro
 the first commit, and are listed in section 2.4 because they constrain how B
 and C are written.
 
+**As built (MS1-56).** Four corrections to this section, all found against
+MAME rather than in review:
+
+- **The palette is `RGBx_555`, not B/C's `RRRRGGGGBBBBRGBx`.** The table above
+  says "the same interleaved non-RGB bit layout", and that is wrong;
+  `system_D` sets a different format. `ms1_video.sv` already split on
+  `mode == 2'd2` for it, so nothing had to change.
+- **Two scroll layers means layer 2 is ABSENT, not disabled.** `system_D`
+  instantiates `m_tmap[0]` and `m_tmap[1]` only, so `active_layers` cannot
+  turn layer 2 on. `ms1_video.sv`'s `nlayers` input existed for this and the
+  core was passing a hard-coded 3.
+- **System D declares no `global_mask`**, where B masks to 20 bits and C to
+  21. All 24 address bits are decoded.
+- **The palette window is mirrored over 0x3000, which excludes bit 11**, so
+  `0D8800`-`0D8FFF` is unmapped rather than a mirror.
+
+The sequencing note held: the two hooks it names -- the per-mode decode table
+and the zero OKI bank -- were both there, and the whole mode went in as one
+change with no rework of B or C.
+
 **D's own gates**, mirroring the others: pixel-exact against MAME for a
 two-layer scene and a sprite scene (M1); the ten-line protection verified
 command by command, and the OKI bank verified by driving all eight banks and

@@ -132,7 +132,7 @@ wire   [1:0] buttons;
 wire [127:0] status;
 wire  [10:0] ps2_key;
 wire  [31:0] joystick_0, joystick_1;
-wire   [7:0] paddle_0;
+wire   [7:0] paddle_0, paddle_1;
 
 wire         ioctl_download;
 wire         ioctl_wr;
@@ -164,6 +164,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
 	.paddle_0(paddle_0),
+	.paddle_1(paddle_1),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_wr(ioctl_wr),
@@ -317,9 +318,9 @@ end
 
 wire [1:0] mode     = dip_sw[2][1:0];
 wire [1:0] prot_sel = dip_sw[2][6:5];
-// Declared here because the .mra already carries it and the decode belongs
-// with the rest of the byte; ms1_sound.sv has no port for it yet and runs
-// both OKIs at 4 MHz. hayaosi1 and both peekaboo sets set it. MS1-8/MS1-40.
+// Sample clock: 48/24 instead of 48/12. hayaosi1 and both peekaboo sets set
+// it -- MAME overrides hayaosi1's OKIs to 2 MHz ("correct speed, but unknown
+// OSC + divider combo") and derives System D's as XTAL(8MHz)/4. MS1-8/MS1-40.
 wire       oki_2mhz = dip_sw[2][4];
 
 // ------------------------------------------------------------------
@@ -429,12 +430,22 @@ wire p2_b3 = af2_en ? 1'b0 : p2_raw[6];
 wire lay_peek = (mode == 2'd2);
 wire lay_haya = (mode == 2'd0) & (prot_sel == 2'd1);
 
+// MiSTer numbers the pad's buttons by POSITION IN THE .mra's <buttons> LIST,
+// so Start and Coin sit at bits 7 and 8 on a three-name list and at 8 and 9
+// on peekaboo's four-name one. Hard-coding 7 and 8 therefore puts Start on
+// peekaboo's "option" button and Coin on Start. Named here once.
+wire p1_start = lay_peek ? joystick_0[8] : joystick_0[7];
+wire p2_start = lay_peek ? joystick_1[8] : joystick_1[7];
+wire p1_coin  = lay_peek ? joystick_0[9] : joystick_0[8];
+wire p2_coin  = lay_peek ? joystick_1[9] : joystick_1[8];
+wire p1_b4    = joystick_0[7] | kb_p1_b4;   // peekaboo "option"; pad + Shift
+
 // --- generic: P1/P2 bit 0 right, 1 left, 2 down, 3 up, 4 B1, 5 B2, 6 B3.
 //     SYSTEM bit 0 start 1, 1 start 2, 5 service, 6 coin 1, 7 coin 2.
 wire [7:0] g_p1  = ~{1'b0, p1_b3, p1_raw[5], p1_b1, p1_raw[3], p1_raw[2], p1_raw[1], p1_raw[0]};
 wire [7:0] g_p2  = ~{1'b0, p2_b3, p2_raw[5], p2_b1, p2_raw[3], p2_raw[2], p2_raw[1], p2_raw[0]};
-wire [7:0] g_sys = ~{joystick_1[8] | kb_coin2, joystick_0[8] | kb_coin1, kb_service, 3'b000,
-                     joystick_1[7] | kb_start2, joystick_0[7] | kb_start1};
+wire [7:0] g_sys = ~{p2_coin | kb_coin2, p1_coin | kb_coin1, kb_service, 3'b000,
+                     p2_start | kb_start2, p1_start | kb_start1};
 
 // --- hayaosi1: a three-player quiz panel. Both "P1" and "P2" carry buttons
 //     for all three players and no directions at all. Player 3 has no pad
@@ -447,32 +458,51 @@ wire [7:0] g_sys = ~{joystick_1[8] | kb_coin2, joystick_0[8] | kb_coin1, kb_serv
 //     P2    --    P2 B5  P3 B2  P3 B4  P1 B2  P1 B4  P2 B2  P2 B4
 wire [7:0] h_p1  = ~{1'b0, kb_p1_b5, 2'b00, p1_b1, p1_b3, p2_b1, p2_b3};
 wire [7:0] h_p2  = ~{2'b00, 2'b00, p1_raw[5], kb_p1_b4, p2_raw[5], 1'b0};
-wire [7:0] h_sys = ~{joystick_1[8] | kb_coin2, joystick_0[8] | kb_coin1, kb_service,
+wire [7:0] h_sys = ~{p2_coin | kb_coin2, p1_coin | kb_coin1, kb_service,
                      kb_start3, kb_test_mode, 1'b0,
-                     joystick_1[7] | kb_start2, joystick_0[7] | kb_start1};
+                     p2_start | kb_start2, p1_start | kb_start1};
 
-// --- peekaboo: P1 is an 8-bit PADDLE, not a joystick, clamped to the range
-//     MAME's PORT_MINMAX gives it. SYSTEM is a 16-BIT port on this board and
-//     ms1_iomcu's mux is 8 bits wide, so only the low half reaches the game:
-//     the four coin inputs and the two starts. Its buttons live in the high
-//     byte and are unreachable -- MS1-42, and moot until System D's memory
-//     map exists (PLAN 2.5).
-wire  [7:0] pad_cl = (paddle_0 < 8'h18) ? 8'h18 : (paddle_0 > 8'hE0) ? 8'hE0 : paddle_0;
+// --- peekaboo: P1 and P2 are 8-bit PADDLES, not joysticks, clamped to the
+//     range MAME's PORT_MINMAX gives them. They are ACTIVE HIGH -- an analog
+//     value, not a switch -- so unlike every other port here they are not
+//     inverted, and they are read through System D's own protection port
+//     (commands 0x51 and 0x52) rather than the I/O MCU's mux.
+//
+//     SYSTEM is a 16-BIT port on this board. The low half is the four coin
+//     inputs and the two starts, as elsewhere; the HIGH half carries the six
+//     buttons, and System D's map reads the whole word at 0F0000. MS1-42.
+//     high bit  0     1     2     3     4            5         6,7
+//               P1 B1 P1 B2 P2 B1 P2 B2 B3 "clear"   B4 "opt"  unknown
+//     B3 and B4 are single shared panel buttons, not per-player, so both
+//     come off pad 1. peekaboo's .mra names four buttons rather than three,
+//     which is also why Start and Coin move up a bit on this layout.
+wire  [7:0] pad_cl  = (paddle_0 < 8'h18) ? 8'h18 : (paddle_0 > 8'hE0) ? 8'hE0 : paddle_0;
+wire  [7:0] pad2_cl = (paddle_1 < 8'h18) ? 8'h18 : (paddle_1 > 8'hE0) ? 8'hE0 : paddle_1;
 wire  [7:0] k_p1   = pad_cl;
-wire  [7:0] k_p2   = 8'hFF;
+wire  [7:0] k_p2   = pad2_cl;
+//     SYSTEM's low bits 0 and 1 are COIN3 and COIN4, which MAME's comments
+//     name "service" and "test" -- they are coin slots, not the service
+//     switch. peekaboo's actual PORT_SERVICE is DSW bit 2, so F2 goes there
+//     (below) and bit 1 stays idle.
 wire  [7:0] k_sys  = ~{2'b00,
-                       joystick_1[7] | kb_start2, joystick_0[7] | kb_start1,
-                       joystick_1[8] | kb_coin2,  joystick_0[8] | kb_coin1,
-                       kb_test_mode, kb_service};
+                       p2_start | kb_start2, p1_start | kb_start1,
+                       p2_coin | kb_coin2,  p1_coin | kb_coin1,
+                       1'b0, kb_service};
+wire  [7:0] k_syshi = ~{2'b00, p1_b4, p1_b3,
+                        p2_raw[5], p2_b1, p1_raw[5], p1_b1};
 
 wire [7:0] in_p1     = lay_peek ? k_p1  : lay_haya ? h_p1  : g_p1;
 wire [7:0] in_p2     = lay_peek ? k_p2  : lay_haya ? h_p2  : g_p2;
 wire [7:0] in_system = lay_peek ? k_sys : lay_haya ? h_sys : g_sys;
+// Zero on every board but System D, whose SYSTEM port is 16 bits wide.
+wire [7:0] in_sys_hi = lay_peek ? k_syshi : 8'h00;
 
-// F2 is Service Mode. On the generic layout that is DSW2 bit 7
-// (PORT_SERVICE, active low); the other two layouts put it in SYSTEM above,
-// so the DSW2 bit must be left alone there or a real DIP gets flipped.
-wire [7:0] in_dsw1 = dip_sw[0];
+// F2 is Service Mode. On the generic layout that is DSW2 bit 7 (PORT_SERVICE,
+// active low). hayaosi1 puts it in SYSTEM above, and peekaboo -- whose one
+// DSW port is the 16-bit word in_dsw2:in_dsw1 -- puts it at DSW bit 2. In
+// every case the bit that is NOT this board's must be left alone, or F2
+// quietly flips a real DIP instead.
+wire [7:0] in_dsw1 = dip_sw[0] ^ {5'd0, (kb_test_mode & lay_peek), 2'd0};
 wire [7:0] in_dsw2 = dip_sw[1] ^ {(kb_test_mode & ~lay_peek & ~lay_haya), 7'd0};
 
 // ------------------------------------------------------------------
@@ -512,7 +542,8 @@ wire [20:0] l0_use_addr, l1_use_addr, l2_use_addr;
 wire  [7:0] l0_rom_data, l1_rom_data, l2_rom_data;
 wire        l0_ready, l1_ready, l2_ready;
 wire [21:0] spr_rom_addr; wire [7:0] spr_rom_data; wire spr_ready;
-wire [17:0] oki1_rom_addr, oki2_rom_addr;
+wire [19:0] oki1_rom_addr;   // 20 bits: System D's 1 MB sample ROM, banked
+wire [17:0] oki2_rom_addr;
 wire  [7:0] oki1_rom_data, oki2_rom_data;
 wire        oki1_stall, oki2_stall;
 wire  [8:0] prom_addr;     wire [7:0] prom_data;
@@ -751,6 +782,7 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	.mcu_rom_addr(mcu_rom_addr), .mcu_rom_data(mcu_rom_data), .mcu_rom_ready(mcu_rom_ready),
 
 	.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1), .in_dsw2(in_dsw2), .in_system(in_system),
+	.in_sys_hi(in_sys_hi), .oki_2mhz(oki_2mhz),
 
 	.l0_rom_addr(l0_rom_addr), .l1_rom_addr(l1_rom_addr), .l2_rom_addr(l2_rom_addr),
 	.l0_rom_use_addr(l0_use_addr), .l1_rom_use_addr(l1_use_addr), .l2_rom_use_addr(l2_use_addr),

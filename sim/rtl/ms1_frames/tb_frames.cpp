@@ -48,7 +48,8 @@ int main(int argc, char **argv) {
 	auto g0 = slurp(d + "/gfx0.bin"), g1 = slurp(d + "/gfx1.bin"), g2 = slurp(d + "/gfx2.bin", false);
 	auto srom = slurp(d + "/sprites.bin");
 	auto prom = slurp(d + "/prom.bin");
-	auto sndrom = slurp(d + "/audiocpu.bin");
+	// System D has no sound CPU, so its image directory has no audiocpu.bin.
+	auto sndrom = slurp(d + "/audiocpu.bin", mode != 2);
 	auto ok1  = slurp(d + "/oki1.bin", false);
 	auto ok2  = slurp(d + "/oki2.bin", false);
 
@@ -59,6 +60,10 @@ int main(int argc, char **argv) {
 	top->in_dsw1   = strtol(argv[6], nullptr, 16) & 0xFF;
 	top->in_dsw2   = strtol(argv[7], nullptr, 16) & 0xFF;
 	top->in_system = strtol(argv[8], nullptr, 16) & 0xFF;
+	// System D's SYSTEM port is 16 bits (MS1-42); zero on B and C.
+	top->in_sys_hi = envl("MS1_SYSHI", 0xFF) & 0xFF;
+	// MAME runs hayaosi1's and all of System D's samples at 2 MHz.
+	top->oki_2mhz  = envl("MS1_OKI2MHZ", mode == 2 ? 1 : 0) != 0;
 	top->reset = 1; top->clk = 0;
 	top->oki_status_real = 0;   // MAME's default: oki_status_r returns 0
 	// Protection model, as the .mra game-mode byte bits 6:5 encode it:
@@ -109,7 +114,10 @@ int main(int argc, char **argv) {
 	// be diffed command by command -- M2 gate (5), which explicitly is not
 	// satisfied by "the game boots".
 	FILE *plog = getenv("MS1_PROTLOG") ? fopen(getenv("MS1_PROTLOG"), "w") : nullptr;
-	const unsigned PROT_ADDR = mode ? 0x0D8000 : 0x0E0000;
+	// System D's port is at 0x100000, installed by init_peekaboo rather than
+	// declared in the map -- see sim/oracle/traces/bus_peekaboo/summary.txt,
+	// which records prot_addr 100000.
+	const unsigned PROT_ADDR = mode == 2 ? 0x100000 : mode ? 0x0D8000 : 0x0E0000;
 
 	const int W = 256, H = 224;
 	std::vector<std::vector<uint32_t>> frames;

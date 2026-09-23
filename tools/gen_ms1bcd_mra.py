@@ -336,12 +336,31 @@ def mra(setname):
   <rbf>JalecoMS1BCD</rbf>
 {'  <rotation>vertical (cw)</rotation>' + chr(10) if e['rot'] == 90 else ''}
 {switches_xml(setname, cfg)}
-  <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>
+{buttons_xml(setname)}
 
   <rom index="0" zip="{mra_zip_attr(setname)}" md5="none">
 {parts_xml(setname)}{patches_xml(setname)}  </rom>
 {prom_xml(setname)}</misterromdescription>
 """
+
+# MiSTer's <buttons> list is what the OSD offers to remap, so a button with
+# no entry here cannot be bound to a pad at all. Three names covers the
+# generic layout; peekaboo's panel adds a fourth ("option"), and its third is
+# the "stage clear" button rather than a normal attack.  hayaosi1 wants five
+# and gets three -- its buttons 4 and 5 are on the keyboard. MS1-41.
+BUTTONS = {
+    'peekaboo':  'Button 1,Button 2,Stage Clear,Option,Start,Coin',
+    'peekaboou': 'Button 1,Button 2,Stage Clear,Option,Start,Coin',
+}
+BUTTON_DEFAULTS = {
+    'peekaboo':  'Y,B,A,X,Start,R',
+    'peekaboou': 'Y,B,A,X,Start,R',
+}
+
+def buttons_xml(setname):
+    names = BUTTONS.get(setname, 'Button 1,Button 2,Button 3,Start,Coin')
+    dflt  = BUTTON_DEFAULTS.get(setname, 'Y,B,A,Start,R')
+    return f'  <buttons names="{names}" default="{dflt}"/>'
 
 # ---------------------------------------------------------------- check
 def build_stream(setname, byname, bycrc, strict_names):

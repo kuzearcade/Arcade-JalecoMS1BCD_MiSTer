@@ -28,6 +28,35 @@
 // object RAM, 0E0000/0E8000/0F0000 VRAM with +0x4000 mirrors, 1C0000 work RAM
 // mirrored +0x30000, 0D8000 protection) and masks to 21 bits.
 //
+// Decode, System D (megasys1D_map). It is a DIFFERENT BOARD, not a variant:
+// one 68000 and no sound CPU, no YM at all, ONE OKIM6295 the main CPU drives
+// itself, TWO scroll layers instead of three, and a protection port of its
+// own at 0x100000 that doubles as the sample-bank latch.
+//   000000-03FFFF  ROM (one bank; there is no second one)
+//   0C2000-0C2005  layer 0 scroll     0C2008-0C200D  layer 1 scroll
+//   0C2108         sprite bank -- MAME maps this .nopw(), so it is DECODED
+//                  AND DISCARDED, not left to fall through
+//   0C2200         sprite_flag        0C2208         active_layers (w)
+//   0C2308         screen_flag (w)
+//   0CA000-0CBFFF  object RAM
+//   0D0000-0D3FFF  scroll 1 VRAM  ("scroll2")
+//   0D8000-0D87FF  palette, MIRRORED over 0x3000 (so 0D9000, 0DA000, 0DB000
+//                  are the same 2 KB; 0D8800-0D8FFF is NOT -- bit 11 is not
+//                  in the mirror mask and is therefore unmapped)
+//   0E0000         DSW   (read, 16 bits: one port, not two 8-bit ones)
+//   0E8000-0EBFFF  scroll 0 VRAM  ("scroll1")
+//   0F0000         SYSTEM (read, 16 bits -- the six buttons are in the HIGH
+//                  byte, which is why in_sys_hi exists; MS1-42)
+//   0F8001         OKIM6295, low byte only
+//   100000         protection (installed by init_peekaboo, not in the map)
+//   1F0000-1FFFFF  work RAM; sprite RAM is still work RAM + 0x8000 bytes
+// The two scroll windows are INVERTED with respect to their addresses: the
+// LOWER one (0D0000) is MAME's m_tmap[1], the HIGHER one (0E8000) is
+// m_tmap[0]. Wiring them by address order silently swaps the two layers.
+//
+// System D declares NO global_mask, so unlike B and C the full 24-bit
+// address is decoded.
+//
 // WORK RAM BYTE WRITES MIRROR INTO BOTH HALVES. MAME's ram_w says so in
 // capitals -- "DON'T use COMBINE_DATA ... 64th Street and Chimera Beast rely
 // on this for attract inputs" -- so a byte write puts the same byte in both
@@ -60,8 +89,21 @@ module ms1_main (
 	input        [7:0]  mcu_rom_data,
 	input               mcu_rom_ready,
 
-	// board inputs
+	// board inputs. in_dsw2:in_dsw1 is also System D's single 16-bit DSW
+	// port, and in_sys_hi is the high half of its 16-bit SYSTEM port --
+	// unused, and expected to be zero, on every B and C set.
 	input        [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
+	input        [7:0]  in_sys_hi,
+
+	// System D's OKIM6295, driven by THIS CPU (there is no sound CPU on that
+	// board). oki_we is one pulse per write at 0F8001; oki_bank is the sample
+	// bank the protection latch selects; oki_status is the chip's own read
+	// data, which System D reads for real -- the ignore-status hack in
+	// ms1_sound applies to the B/C sound CPU's ports, not to this one.
+	output reg          oki_we,
+	output reg   [7:0]  oki_wdata,
+	output reg   [2:0]  oki_bank,
+	input        [7:0]  oki_status,
 
 	// video timing in, so the interrupt timer and the MCU's INT1 are real
 	input        [8:0]  vcount,
@@ -159,7 +201,12 @@ module ms1_main (
 	wire        as_active = ~ASn & (~LDSn | ~UDSn);
 
 	// ------------------------------------------------------------- decode
+	// `mode` idles at 3 until the .mra's <switches> block arrives (MS1-53),
+	// so these are written as exact compares: an undecoded mode selects no
+	// region at all rather than falling into a neighbour's map.
+	wire is_b = (mode == 2'd0);
 	wire is_c = (mode == 2'd1);
+	wire is_d = (mode == 2'd2);
 
 	// ---- simulated protection (prot == 1): state and the per-game command
 	// table. The responder itself is further down, with the rest of the
@@ -176,6 +223,18 @@ module ms1_main (
 	reg        io_irq2;
 	reg        io_int1_d;
 
+	// ---- System D's protection (prot == 3): the latch and its read
+	// decode. Declared here for the same reason as the block above -- the
+	// CPU read mux and the savestate readback are both upstream of the
+	// responder, which is down with the rest of the protection logic.
+	reg  [15:0] pk_latch;
+	reg         pk_irq4;
+	reg         oki_we_d;
+	wire [15:0] pk_rd = (pk_latch == 16'h0002) ? 16'h0003
+	                  : (pk_latch == 16'h0051) ? {8'h00, in_p1}
+	                  : (pk_latch == 16'h0052) ? {8'h00, in_p2}
+	                                           : pk_latch;
+
 	// THE GLOBAL ADDRESS MASK IS PART OF THE DECODE. MAME's maps open with
 	// map.global_mask(0xfffff) on System B and 0x1fffff on System C, and the
 	// board really does ignore the high address lines. It matters from the
@@ -185,25 +244,26 @@ module ms1_main (
 	// silently dropped every one of those writes -- and because the harness
 	// masked the address only on its way into the TRACE, the trace looked
 	// correct while the memory behind it was not being written.
-	wire [23:0] amask = is_c ? 24'h1FFFFF : 24'h0FFFFF;
+	// System D declares no global_mask at all, so it decodes all 24 bits.
+	wire [23:0] amask = is_d ? 24'hFFFFFF : is_c ? 24'h1FFFFF : 24'h0FFFFF;
 	wire [23:0] a = byte_addr & amask;
 
 	// System B
-	wire b_rom0 = ~is_c & (a < 24'h040000);
-	wire b_rom1 = ~is_c & (a >= 24'h080000) & (a < 24'h0C0000);
-	wire b_vreg = ~is_c & (a >= 24'h044000) & (a < 24'h044400);
-	wire b_pal  = ~is_c & (a >= 24'h048000) & (a < 24'h048800);
-	wire b_obj  = ~is_c & (a >= 24'h04E000) & (a < 24'h050000);
-	wire b_v0   = ~is_c & (a >= 24'h050000) & (a < 24'h054000);
-	wire b_v1   = ~is_c & (a >= 24'h054000) & (a < 24'h058000);
-	wire b_v2   = ~is_c & (a >= 24'h058000) & (a < 24'h05C000);
-	wire b_ram  = ~is_c & (a >= 24'h060000) & (a < 24'h080000);   // + mirror
-	wire b_prot = ~is_c & (a >= 24'h0E0000) & (a < 24'h0E0002);
+	wire b_rom0 = is_b   & (a < 24'h040000);
+	wire b_rom1 = is_b   & (a >= 24'h080000) & (a < 24'h0C0000);
+	wire b_vreg = is_b   & (a >= 24'h044000) & (a < 24'h044400);
+	wire b_pal  = is_b   & (a >= 24'h048000) & (a < 24'h048800);
+	wire b_obj  = is_b   & (a >= 24'h04E000) & (a < 24'h050000);
+	wire b_v0   = is_b   & (a >= 24'h050000) & (a < 24'h054000);
+	wire b_v1   = is_b   & (a >= 24'h054000) & (a < 24'h058000);
+	wire b_v2   = is_b   & (a >= 24'h058000) & (a < 24'h05C000);
+	wire b_ram  = is_b   & (a >= 24'h060000) & (a < 24'h080000);   // + mirror
+	wire b_prot = is_b   & (a >= 24'h0E0000) & (a < 24'h0E0002);
 	// monkelf has no protection device: the bootleg reads the five input
 	// ports DIRECTLY, at their own addresses just above the port the
 	// protected boards use (MAME's megasys1B_monkelf_map). MS1-55.
 	//   0E0002 P1   0E0004 P2   0E0006 DSW1   0E0008 DSW2   0E000A SYSTEM
-	wire b_mkin = ~is_c & is_monkelf & (a >= 24'h0E0002) & (a < 24'h0E000C);
+	wire b_mkin = is_b   & is_monkelf & (a >= 24'h0E0002) & (a < 24'h0E000C);
 	reg [7:0] mkin_q;
 	always @(*) case (a[3:1])
 		3'd1:    mkin_q = in_p1;
@@ -224,15 +284,30 @@ module ms1_main (
 	wire c_ram  = is_c & (a >= 24'h1C0000) & (a < 24'h200000);
 	wire c_prot = is_c & (a >= 24'h0D8000) & (a < 24'h0D8002);
 
-	wire sel_rom  = b_rom0 | b_rom1 | c_rom0;
-	wire sel_vreg = b_vreg | c_vreg;
-	wire sel_pal  = b_pal  | c_pal;
-	wire sel_obj  = b_obj  | c_obj;
-	wire sel_v0   = b_v0   | c_v0;
-	wire sel_v1   = b_v1   | c_v1;
-	wire sel_v2   = b_v2   | c_v2;
-	wire sel_ram  = b_ram  | c_ram;
-	wire sel_prot = b_prot | c_prot;
+	// System D. See the map in the header; the two things that are easy to
+	// get wrong are the palette mirror (0x3000, which does NOT include bit
+	// 11) and the layer order (0D0000 is layer 1, 0E8000 is layer 0).
+	wire d_rom0 = is_d & (a < 24'h040000);
+	wire d_vreg = is_d & (a >= 24'h0C2000) & (a < 24'h0C2400);
+	wire d_obj  = is_d & (a >= 24'h0CA000) & (a < 24'h0CC000);
+	wire d_v1   = is_d & (a >= 24'h0D0000) & (a < 24'h0D4000);
+	wire d_pal  = is_d & (a >= 24'h0D8000) & (a < 24'h0DC000) & ~a[11];
+	wire d_dsw  = is_d & (a >= 24'h0E0000) & (a < 24'h0E0002);
+	wire d_v0   = is_d & (a >= 24'h0E8000) & (a < 24'h0EC000);
+	wire d_sys  = is_d & (a >= 24'h0F0000) & (a < 24'h0F0002);
+	wire d_oki  = is_d & (a >= 24'h0F8000) & (a < 24'h0F8002);
+	wire d_prot = is_d & (a >= 24'h100000) & (a < 24'h100002);
+	wire d_ram  = is_d & (a >= 24'h1F0000) & (a < 24'h200000);
+
+	wire sel_rom  = b_rom0 | b_rom1 | c_rom0 | d_rom0;
+	wire sel_vreg = b_vreg | c_vreg | d_vreg;
+	wire sel_pal  = b_pal  | c_pal  | d_pal;
+	wire sel_obj  = b_obj  | c_obj  | d_obj;
+	wire sel_v0   = b_v0   | c_v0   | d_v0;
+	wire sel_v1   = b_v1   | c_v1   | d_v1;
+	wire sel_v2   = b_v2   | c_v2;          // System D has no layer 2
+	wire sel_ram  = b_ram  | c_ram  | d_ram;
+	wire sel_prot = b_prot | c_prot | d_prot;
 
 	// ROM word index: B's second bank continues the same region at +0x40000.
 	//
@@ -392,11 +467,14 @@ module ms1_main (
 		case (ss_addr[3:0])
 			4'd0: ss_misc_rdata = {2'd0, bufi, buf_busy};
 			4'd1: ss_misc_rdata = {12'd0, irq1_h, irq2_h, irq4_h, iack_d};
-			4'd2: ss_misc_rdata = {13'd0, int1_dd, slatch_d, prot_we_pulse};
+			4'd2: ss_misc_rdata = {12'd0, oki_we_d, int1_dd, slatch_d, prot_we_pulse};
 			4'd3: ss_misc_rdata = {13'd0, mdiv};
 			4'd4: ss_misc_rdata = {13'd0, phdiv};
 			4'd5: ss_misc_rdata = {14'd0, phase, as_d};
 			4'd6: ss_misc_rdata = {7'd0, io_int1_d, io_latched};
+			// System D's protection latch, and its OKI bank + last byte
+			4'd7: ss_misc_rdata = pk_latch;
+			4'd8: ss_misc_rdata = {oki_wdata, 5'd0, oki_bank};
 			default: ss_misc_rdata = 16'h0000;
 		endcase
 	end
@@ -577,8 +655,14 @@ module ms1_main (
 	wire [8:0] vw_i  = ss_w & ss_vreg ? ss_addr[8:0] : vreg_i;
 	wire [15:0] vw_d = ss_w & ss_vreg ? ss_wdata     : wdat;
 	wire        vw_e = (ss_w & ss_vreg) | (we & sel_vreg);
+	// System D's register WORD indices are System C's, one for one: its
+	// 0C2000 window has scroll 0 at words 0-2, scroll 1 at 4-6, sprite_flag
+	// at 0x100, active_layers at 0x104 and screen_flag at 0x184. The only
+	// differences are that word 0x84 (sprite bank) is mapped .nopw() and
+	// that there is no layer 2 to write at all, so the same case serves
+	// both and reg_sprite_bank stays zero below.
 	always @(posedge clk) if (vw_e) begin
-		if (is_c) begin
+		if (is_c | is_d) begin
 			case (vw_i)
 				9'h104: sh_active <= vw_d;  9'h100: sh_sflag <= vw_d;
 				9'h084: sh_sbank  <= vw_d;  9'h184: sh_scrf  <= vw_d;
@@ -632,6 +716,9 @@ module ms1_main (
 	// with no command table installed: the latch is never written.
 	wire [7:0] prot_rd = (prot == 2'd1) ? io_latched
 	                   : (prot == 2'd0) ? mcu_prot_rd : 8'h00;
+	// System D's port is a full word (see pk_rd, below); B and C's is a byte
+	// in the low half.
+	wire [15:0] prot_rd16 = is_d ? pk_rd : {8'h00, prot_rd};
 	always @* begin
 		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
 		else if (sel_rom)  rdat = rom_data;
@@ -643,7 +730,15 @@ module ms1_main (
 		else if (sel_v2)   rdat = vr2_q;
 		else if (sel_vreg) rdat = vreg_q;
 		else if (b_mkin)   rdat = {8'hFF, mkin_q};   // MS1-55, high byte undeclared
-		else if (sel_prot) rdat = {8'h00, prot_rd};
+		else if (sel_prot) rdat = prot_rd16;
+		// System D reads its ports directly, and both are SIXTEEN bits: one
+		// DSW port rather than B/C's two, and a SYSTEM port whose high byte
+		// carries the six buttons.
+		else if (d_dsw)    rdat = {in_dsw2, in_dsw1};
+		else if (d_sys)    rdat = {in_sys_hi, in_system};
+		// The OKI is on the low byte at the ODD address, so the word read
+		// puts the status in [7:0] and leaves the high byte undriven.
+		else if (d_oki)    rdat = {8'h00, oki_status};
 		else               rdat = 16'h0000;
 	end
 	always @* iEdb = rdat;
@@ -671,7 +766,11 @@ module ms1_main (
 	wire mcu_cen_tick = (mdiv == mdiv_max);
 
 	wire mcu_irq2;
-	wire prot_irq2 = use_iosim ? io_irq2 : mcu_irq2;
+	// Only the source the .mra selected may raise it. mcu_irq2 is quiet while
+	// the MCU is held in reset, but naming the condition costs nothing and
+	// keeps mode D from depending on that.
+	wire prot_irq2 = (prot == 2'd1) ? io_irq2
+	               : (prot == 2'd0) ? mcu_irq2 : 1'b0;
 	wire [3:0] mcu_dbg_bank;
 	wire mcu_dbg_rd;
 	// INT1 is display enable: high over the visible rows (MS1-19)
@@ -741,6 +840,63 @@ module ms1_main (
 		end
 	end
 
+	// ---- System D's protection (prot == 3), MAME's protection_peekaboo_r/w.
+	//
+	// Nothing like the B/C command table: there is no MCU device in system_D
+	// at all (peekaboo ships a dumped TMP91640 that MAME does not run), and
+	// the port is a plain 16-bit latch with three special read values.
+	//
+	//   write  COMBINE_DATA the latch, then
+	//            if ((val & 0x90) == 0x90) okibank = val & 7
+	//          and raise IRQ **4** -- not 2. This is the ONLY interrupt the
+	//          board has besides vblank, and it is how the game clocks its
+	//          paddle reads.
+	//   read   0x0002 -> 0x0003, 0x0051 -> P1, 0x0052 -> P2, anything else
+	//          echoes the latch back. The compares are against the WHOLE
+	//          word, so a write with a non-zero high byte matches none of
+	//          them and reads back as itself.
+	//
+	// The bank is part of the same latch: bit 7 and bit 4 both set means the
+	// low three bits are a sample-bank number. Entry 7 is configured to the
+	// same block as entry 0 (init_peekaboo does configure_entry(7, ROM+0x20000)
+	// and then configure_entries(0, 7, ROM+0x20000, 0x20000), which fills
+	// 0..6), so bank 7 is NOT ROM+0x100000 -- that would run off the end of
+	// a 1 MB sample ROM. ms1_sound folds that in.
+	wire [15:0] pk_next = {(~UDSn) ? wdat[15:8] : pk_latch[15:8],
+	                       (~LDSn) ? wdat[7:0]  : pk_latch[7:0]};
+	always @(posedge clk) begin
+		pk_irq4 <= 1'b0;
+		oki_we  <= 1'b0;
+		if (reset) begin
+			pk_latch <= 16'h0000; oki_bank <= 3'd0;
+			oki_wdata <= 8'h00;
+		end
+		// Restored HERE, in the block that owns it (MS1-34).
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd7)) begin
+			pk_latch <= ss_wdata;
+		end
+		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd8)) begin
+			oki_bank <= ss_wdata[2:0]; oki_wdata <= ss_wdata[15:8];
+		end
+		else begin
+			if (is_d & prot_we_edge) begin
+				pk_latch <= pk_next;
+				if ((pk_next[7:0] & 8'h90) == 8'h90) oki_bank <= pk_next[2:0];
+				pk_irq4  <= 1'b1;
+			end
+			// 0F8001 is an ODD byte address: the chip is on the LOW data
+			// lane and the access is an LDS one. A word write hits it too,
+			// which is why this keys on the strobe rather than on a[0].
+			if (is_d & (we & d_oki) & ~oki_we_d) begin
+				oki_we    <= 1'b1;
+				oki_wdata <= wdat[7:0];
+			end
+		end
+	end
+	always @(posedge clk)
+		if (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) oki_we_d <= ss_wdata[3];
+		else oki_we_d <= we & d_oki;
+
 	ms1_iomcu u_mcu (
 		// Held in reset unless it IS the protection: on an iosim or a
 		// bootleg set the .mra ships a zero-filled MCU region, and 0x00 is
@@ -768,7 +924,9 @@ module ms1_main (
 		end
 	end
 
-	wire sel_slatch = is_c ? (a >= 24'h0C8000 && a < 24'h0C8002)
+	// System D has no sound CPU and therefore no latch.
+	wire sel_slatch = is_d ? 1'b0
+	                : is_c ? (a >= 24'h0C8000 && a < 24'h0C8002)
 	                       : (a >= 24'h044308 && a < 24'h04430A);
 	reg slatch_d;
 	always @(posedge clk) begin
@@ -811,9 +969,21 @@ module ms1_main (
 			irq1_h <= ss_wdata[3]; irq2_h <= ss_wdata[2]; irq4_h <= ss_wdata[1];
 		end
 		else begin
-			if (vtick && vcount == 9'd96)  irq1_h <= 1'b1;
-			if (vtick && vcount == 9'd240) irq4_h <= 1'b1;
+			// System B and C take their level 1 and level 4 from the
+			// raster (megasys1BC_scanline, lines 96 and 240) and level 2
+			// from the protection.
+			//
+			// System D has NO scanline callback at all: system_D uses
+			// set_vblank_int(megasys1D_irq), which is one level **2** per
+			// frame at the start of vblank, and its only other interrupt is
+			// the level 4 its protection port raises. Leaving B/C's timer
+			// running under mode D gives the game a level 1 and a level 4 it
+			// has no handler for and never the level 2 it waits on.
+			if (vtick && vcount == 9'd96  && ~is_d) irq1_h <= 1'b1;
+			if (vtick && vcount == 9'd240)
+				if (is_d) irq2_h <= 1'b1; else irq4_h <= 1'b1;
 			if (prot_irq2)                 irq2_h <= 1'b1;
+			if (pk_irq4)                   irq4_h <= 1'b1;
 			// MS1-23 says one acknowledge CYCLE retires exactly one interrupt.
 			// It must also retire one of the GAME's interrupts only. The
 			// savestate park raises level 7 and is acknowledged like any

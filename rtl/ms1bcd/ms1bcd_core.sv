@@ -16,7 +16,7 @@ module ms1bcd_core #(
 ) (
 	input               clk,           // 48 MHz
 	input               reset,
-	input        [1:0]  mode,          // 0 = B, 1 = C
+	input        [1:0]  mode,          // 0 = B, 1 = C, 2 = D
 	// .mra game-mode byte bits 6:5: 0 real MCU, 1 simulated, 2 none, 3 D's own.
 	input        [1:0]  prot,
 
@@ -33,6 +33,11 @@ module ms1bcd_core #(
 	input               mcu_rom_ready,
 
 	input        [7:0]  in_p1, in_p2, in_dsw1, in_dsw2, in_system,
+	// System D's SYSTEM port is 16 bits and its four buttons live in the
+	// high half; tie this to zero on B and C. MS1-42.
+	input        [7:0]  in_sys_hi,
+	// .mra game-mode byte bit 4: sample clock 2 MHz instead of 4. MS1-40.
+	input               oki_2mhz,
 
 	// tile and sprite ROM, served by the caller
 	output      [20:0]  l0_rom_addr, l1_rom_addr, l2_rom_addr,
@@ -52,7 +57,8 @@ module ms1bcd_core #(
 	output      [16:0]  srom_addr,
 	input       [15:0]  srom_data,
 	input               srom_ready,
-	output      [17:0]  oki1_rom_addr, oki2_rom_addr,
+	output      [19:0]  oki1_rom_addr,   // 20 bits: System D's 1 MB, banked
+	output      [17:0]  oki2_rom_addr,
 	input        [7:0]  oki1_rom_data, oki2_rom_data,
 	input               oki1_stall, oki2_stall,
 	input               oki_status_real,
@@ -185,7 +191,9 @@ module ms1bcd_core #(
 		.mcu_rom_ready(mcu_rom_ready),
 		.dbg_romwait(dbg_romwait), .dbg_romacc(dbg_romacc),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
-		.in_dsw2(in_dsw2), .in_system(in_system),
+		.in_dsw2(in_dsw2), .in_system(in_system), .in_sys_hi(in_sys_hi),
+		.oki_we(main_oki_we), .oki_wdata(main_oki_wdata),
+		.oki_bank(main_oki_bank), .oki_status(main_oki_status),
 		.vcount(vcount), .vtick(vtick),
 		.tr_addr(tr_addr), .tr_data(tr_data), .tr_we(tr_we), .tr_valid(tr_valid),
 		.v0_rd_addr(v0a), .v1_rd_addr(v1a), .v2_rd_addr(v2a),
@@ -241,8 +249,16 @@ module ms1bcd_core #(
 	wire        slatch_we;
 	wire [15:0] slatch_data;
 
+	// System D's OKI lives in the sound block but is driven by the MAIN CPU:
+	// that board has no sound CPU at all. See ms1_sound.sv's header.
+	wire       main_oki_we;
+	wire [7:0] main_oki_wdata, main_oki_status;
+	wire [2:0] main_oki_bank;
+
 	ms1_sound u_sound (
-		.clk(clk), .reset(reset), .mode(mode),
+		.clk(clk), .reset(reset), .mode(mode), .oki_2mhz(oki_2mhz),
+		.main_oki_we(main_oki_we), .main_oki_wdata(main_oki_wdata),
+		.main_oki_bank(main_oki_bank), .main_oki_status(main_oki_status),
 		.sreset(r_scf[4] | ss_rst_dbg[0]),   // + the bisection aid
 		.oki_status_real(oki_status_real),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
@@ -332,9 +348,16 @@ module ms1bcd_core #(
 		end
 	end
 
-	ms1_video #(.LOOKAHEAD(LOOKAHEAD)) u_video (
+	// TOTAL_W must be this module's raster width (hcount wraps at 383), not
+	// the visible 256: the tile fetch runs through blanking and its lookahead
+	// wraps on the whole line. MS1-57.
+	ms1_video #(.LOOKAHEAD(LOOKAHEAD), .TOTAL_W(384)) u_video (
 		.clk(clk), .ce(ce_pix), .reset(reset),
-		.mode(mode), .nlayers(2'd3),
+		// System D's board has two scroll layers, not three: system_D
+		// instantiates m_tmap[0] and m_tmap[1] only, so layer 2 is not
+		// merely disabled but absent, and anything active_layers says about
+		// it must draw nothing.
+		.mode(mode), .nlayers((mode == 2'd2) ? 2'd2 : 2'd3),
 		.active_layers(r_act), .sprite_flag(r_sf),
 		.sprite_bank(r_sb), .screen_flag(r_scf),
 		.t0_sx(r0x), .t0_sy(r0y), .t0_ctrl(r0c),

@@ -1,6 +1,14 @@
 // Jaleco Mega System 1 B/C sound subsystem: the second 68000, a YM2151 and
 // two OKIM6295s.
 //
+// SYSTEM D HAS NONE OF THAT. system_D instantiates one OKIM6295 and nothing
+// else -- no sound CPU, no YM2151, no second OKI -- and the MAIN 68000 writes
+// the chip itself at 0F8001. In mode D this module therefore holds its own
+// 68000 and the YM in reset and lets ms1_main drive OKI 1, including the
+// sample bank that System D's protection latch selects. The OKI is still
+// instantiated HERE so that there is exactly one of it, on one cen, behind
+// one ROM cache.
+//
 // Sound CPU map (megasys1B_sound_map, shared by B and C):
 //   000000-01FFFF  ROM
 //   040000, 060000 read the latch FROM the main CPU, write the latch TO it
@@ -30,8 +38,19 @@
 module ms1_sound (
 	input               clk,           // 48 MHz
 	input               reset,
-	input        [1:0]  mode,          // 0 = B, 1 = C
+	input        [1:0]  mode,          // 0 = B, 1 = C, 2 = D
 	input               oki_status_real,
+	// Sample clock, from the .mra's game-mode byte bit 4: 4 MHz (48/12) on
+	// System B and C, 2 MHz (48/24) on hayaosi1 and on all of System D.
+	// MAME's hayaosi1 comment calls 2 MHz the "correct speed, but unknown
+	// OSC + divider combo"; system_D derives it as XTAL(8'000'000)/4. MS1-40.
+	input               oki_2mhz,
+
+	// ---- System D: the main CPU owns OKI 1 (see the header).
+	input               main_oki_we,     // one pulse per main-CPU write
+	input        [7:0]  main_oki_wdata,
+	input        [2:0]  main_oki_bank,
+	output       [7:0]  main_oki_status,
 
 	// latch from the main CPU
 	input               latch_we,      // one pulse per main-CPU latch write
@@ -53,8 +72,11 @@ module ms1_sound (
 	output      [16:0]  rom_addr,      // word address, 128 KB
 	input       [15:0]  rom_data,
 
-	// sample ROMs
-	output      [17:0]  oki1_rom_addr, oki2_rom_addr,
+	// sample ROMs. OKI 1 is 20 bits because System D's sample ROM is 1 MB,
+	// banked into the chip's own 256 KB window; every other set uses at most
+	// the low 18 and the top two bits read zero.
+	output      [19:0]  oki1_rom_addr,
+	output      [17:0]  oki2_rom_addr,
 	input        [7:0]  oki1_rom_data, oki2_rom_data,
 
 	output signed [15:0] snd_l, snd_r,
@@ -125,29 +147,39 @@ module ms1_sound (
 	// straight on the gate (3) write counts.
 	reg [1:0] ymdiv;
 	always @(posedge clk) if (reset) ymdiv <= 2'd0;
-		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) ymdiv <= ss_wdata[5:4];
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) ymdiv <= ss_wdata[6:5];
 		else if (ss_hold) ymdiv <= ymdiv;
 		else if (enPhi1) ymdiv <= ymdiv + 2'd1;
 	wire ym_cen    = enPhi1 & (ymdiv[0] == 1'b1);
 	wire ym_cen_p1 = enPhi1 & (ymdiv    == 2'd3);
 
-	// OKIs at 4 MHz = 48/12 exactly.
-	reg [3:0] okidiv;
+	// OKIs at 4 MHz = 48/12, or 2 MHz = 48/24. Both are exact divisions of
+	// clk_sys, so this is a counter terminal value and not a second PLL.
+	wire [4:0] okidiv_max = oki_2mhz ? 5'd23 : 5'd11;
+	reg [4:0] okidiv;
 	reg       oki_cen;
 	always @(posedge clk) begin
 		oki_cen <= 1'b0;
-		if (reset) okidiv <= 4'd0;
-		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) okidiv <= ss_wdata[3:0];
+		if (reset) okidiv <= 5'd0;
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) okidiv <= ss_wdata[4:0];
 		else if (ss_hold) okidiv <= okidiv;
-		else if (okidiv == 4'd11) begin okidiv <= 4'd0; oki_cen <= 1'b1; end
-		else okidiv <= okidiv + 4'd1;
+		else if (okidiv >= okidiv_max) begin okidiv <= 5'd0; oki_cen <= 1'b1; end
+		else okidiv <= okidiv + 5'd1;
 	end
 
 	// Power-on reset OR the main CPU's screen_flag bit 4. The debug counters,
 	// the clock dividers and the latches deliberately stay on `reset` alone:
 	// MAME's write counts accumulate across a sound reset, and the clock does
 	// not stop.
+	wire is_d    = (mode == 2'd2);
 	wire snd_rst = reset | sreset;
+	// The sound 68000 and the YM2151 do not exist on System D. Held in
+	// reset rather than removed so one netlist serves all three boards; the
+	// mode byte is a false path (MS1-44), so this costs nothing in timing.
+	// The OKIs stay on snd_rst: screen_flag bit 4 resets OKI 1 on System D
+	// too (megasys1_v.cpp screen_flag_w tests m_oki[0].found(), not the
+	// presence of a sound CPU).
+	wire cpu_rst = snd_rst | is_d;
 
 	// --------------------------------------------------------------- 68000
 	wire        eRWn, ASn, LDSn, UDSn, VMAn, FC0, FC1, FC2, BGn, oRESETn, oHALTEDn;
@@ -250,7 +282,7 @@ module ms1_sound (
 		// is only ~10 clk_sys wide, while cen_p1 comes every 27, so tying the
 		// strobe to the bus cycle still missed busy about two times in three.
 		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd3)) chip_din <= ss_wdata[7:0];
-		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) chip_a0  <= ss_wdata[6];
+		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) chip_a0  <= ss_wdata[7];
 		if (ym_wr & ym_cen_p1) ym_wr <= 1'b0;
 		if (reset) begin
 			ym_wr <= 1'b0;
@@ -262,6 +294,9 @@ module ms1_sound (
 			if (sel_oki1) begin oki1_wr <= 1'b1; dbg_oki1_writes <= dbg_oki1_writes + 1; end
 			if (sel_oki2) begin oki2_wr <= 1'b1; dbg_oki2_writes <= dbg_oki2_writes + 1; end
 		end
+		// In mode D the sound CPU is in reset, so acc_edge never fires and
+		// the count would read zero on a board that is making noise.
+		else if (is_d & main_oki_we) dbg_oki1_writes <= dbg_oki1_writes + 1;
 	end
 
 	// ---- YM2151 register shadow. jt51 has no savestate of its own, so every
@@ -310,7 +345,7 @@ module ms1_sound (
 	end
 
 	jt51 u_ym (
-		.rst(snd_rst), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
+		.rst(cpu_rst), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
 		.cs_n(1'b0), .wr_n(~(ym_wr | rp_run)), .a0(rp_run ? rp_phase : chip_a0),
 		.din(rp_run ? (rp_phase ? ymsh_q : rp_idx) : chip_din),
 		.dout(ym_dout), .ct1(), .ct2(), .irq_n(ym_irq_n),
@@ -321,10 +356,31 @@ module ms1_sound (
 	wire [7:0] oki1_dout, oki2_dout;
 	wire signed [13:0] oki1_snd, oki2_snd;
 
+	// ---- who writes OKI 1. On System B and C it is the sound CPU's 0A0000
+	// port; on System D it is the main CPU's 0F8001. Exactly one of the two
+	// can be live, so this is a mux and not an OR.
+	wire       oki1_wr_eff  = is_d ? main_oki_we    : oki1_wr;
+	wire [7:0] oki1_din_eff = is_d ? main_oki_wdata : chip_din;
+	assign     main_oki_status = oki1_dout;
+
+	// ---- System D's sample banking (megasys1D_oki_map + init_peekaboo).
+	// The chip sees 256 KB: 00000-1FFFF is the head of the ROM and
+	// 20000-3FFFF is one of eight bank entries. The entries were configured
+	// as entry 7 -> ROM+0x20000 FIRST and then entries 0..6 -> ROM+0x20000 +
+	// n*0x20000, so bank 7 is bank 0's block again -- NOT ROM+0x100000,
+	// which is one byte past the end of a 1 MB sample ROM. Reading bank 7
+	// literally is a silent off-the-end fetch that only shows up as noise.
+	wire [17:0] oki1_a;
+	wire  [2:0] bank_eff = (main_oki_bank == 3'd7) ? 3'd0 : main_oki_bank;
+	assign oki1_rom_addr =
+		~is_d        ? {2'd0, oki1_a}                        :
+		oki1_a[17]   ? {bank_eff + 3'd1, oki1_a[16:0]}       :
+		               {3'd0, oki1_a[16:0]};
+
 	jt6295 #(.INTERPOL(0)) u_oki1 (
 		.rst(snd_rst), .clk(clk), .cen(oki_cen & ~oki1_stall), .ss(1'b1),
-		.wrn(~oki1_wr), .din(chip_din), .dout(oki1_dout),
-		.rom_addr(oki1_rom_addr), .rom_data(oki1_rom_data), .rom_ok(1'b1),
+		.wrn(~oki1_wr_eff), .din(oki1_din_eff), .dout(oki1_dout),
+		.rom_addr(oki1_a), .rom_data(oki1_rom_data), .rom_ok(1'b1),
 		.sound(oki1_snd), .sample()
 	);
 	jt6295 #(.INTERPOL(0)) u_oki2 (
@@ -361,7 +417,7 @@ module ms1_sound (
 			4'd2: ss_smisc_rdata = {13'd0, irq4_h, irq2_h, ym_irq_d};
 			4'd3: ss_smisc_rdata = {8'd0, chip_din};
 			4'd4: ss_smisc_rdata = {8'd0, ym_reg_sel};
-			4'd5: ss_smisc_rdata = {9'd0, chip_a0, ymdiv, okidiv};
+			4'd5: ss_smisc_rdata = {8'd0, chip_a0, ymdiv, okidiv};
 			4'd6: ss_smisc_rdata = cpu_acc[15:0];
 			4'd7: ss_smisc_rdata = {4'd0, cpu_ph, cpu_acc[26:16]};
 			default: ss_smisc_rdata = 16'h0000;
@@ -433,7 +489,12 @@ module ms1_sound (
 	// places first to sit on the same scale as the FM.
 	wire signed [21:0] fm_l   = $signed(ym_l) * 22'sd13;
 	wire signed [21:0] fm_r   = $signed(ym_r) * 22'sd13;
-	wire signed [21:0] pcm1   = ($signed(oki1_snd) <<< 2) * 22'sd5;
+	// System D has ONE OKI and routes it at 1.0, not at 0.30 -- it is the
+	// whole soundtrack, not one voice under an FM mix. At B/C's gain the
+	// game is audible but about 10 dB down.
+	wire signed [21:0] pcm1_bc = ($signed(oki1_snd) <<< 2) * 22'sd5;
+	wire signed [21:0] pcm1_d  = ($signed(oki1_snd) <<< 2) * 22'sd16;
+	wire signed [21:0] pcm1   = is_d ? pcm1_d : pcm1_bc;
 	wire signed [21:0] pcm2   = ($signed(oki2_snd) <<< 2) * 22'sd5;
 	wire signed [21:0] mix_l  = (fm_l + pcm1 + pcm2) >>> 4;
 	wire signed [21:0] mix_r  = (fm_r + pcm1 + pcm2) >>> 4;
@@ -449,7 +510,7 @@ module ms1_sound (
 	               (mix_r < -22'sd32768) ? 16'sh8000 : mix_r[15:0];
 
 	fx68k u_scpu (
-		.clk(clk), .HALTn(1'b1), .extReset(snd_rst), .pwrUp(snd_rst),
+		.clk(clk), .HALTn(1'b1), .extReset(cpu_rst), .pwrUp(cpu_rst),
 		.enPhi1(enPhi1), .enPhi2(enPhi2),
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),

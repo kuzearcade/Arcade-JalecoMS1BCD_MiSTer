@@ -62,7 +62,8 @@ module ms1bcd_rom_hw (
 	output       [7:0]  spr_rom_data,
 	output              spr_ready,
 
-	input       [17:0]  oki1_rom_addr, oki2_rom_addr,
+	input       [19:0]  oki1_rom_addr,   // 20 bits: System D's 1 MB, banked
+	input       [17:0]  oki2_rom_addr,
 	output       [7:0]  oki1_rom_data, oki2_rom_data,
 	output              oki1_stall, oki2_stall,
 
@@ -179,7 +180,7 @@ module ms1bcd_rom_hw (
 	wire [23:0] ua_l1  = audit_en ? audit_addr : {3'd0, l1_rom_use_addr};
 	wire [23:0] ua_l2  = audit_en ? audit_addr : {3'd0, l2_rom_use_addr};
 	wire [23:0] a_spr  = audit_en ? audit_addr : {2'd0, spr_rom_addr};
-	wire [23:0] a_oki1 = audit_en ? audit_addr : {6'd0, oki1_rom_addr};
+	wire [23:0] a_oki1 = audit_en ? audit_addr : {4'd0, oki1_rom_addr};
 	wire [23:0] a_oki2 = audit_en ? audit_addr : {6'd0, oki2_rom_addr};
 	wire        oki1_ready, oki2_ready;
 

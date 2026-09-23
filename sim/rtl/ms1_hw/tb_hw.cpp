@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
 	};
 
 	top.mode = envu("TB_MODE", 0);
+	top.oki_2mhz = envu("TB_OKI2MHZ", top.mode == 2 ? 1 : 0) != 0;
 	top.ioctl_download = 0; top.ioctl_wr = 0; top.ioctl_addr = 0;
 	top.ioctl_dout = 0; top.ioctl_index = 0;
 	top.audit_en = 0; top.audit_sel = 0; top.audit_addr = 0;
@@ -98,7 +99,9 @@ int main(int argc, char **argv) {
 	if (nfr) {
 		const int W = 256, H = 224;
 		top.prot = envu("TB_PROT", 0);
-		top.in_p1 = 0xFF; top.in_p2 = 0xFF; top.in_system = 0xFF;
+		top.in_p1 = envu("TB_P1", 0xFF); top.in_p2 = envu("TB_P2", 0xFF);
+		top.in_system = 0xFF;
+		top.in_sys_hi = envu("TB_SYSHI", 0xFF);
 		top.in_dsw1 = envu("TB_DSW1", 0xFF); top.in_dsw2 = envu("TB_DSW2", 0xFD);
 		std::vector<std::vector<uint32_t>> frames;
 		unsigned prev_mcuacc = 0; size_t froze_at = 0;

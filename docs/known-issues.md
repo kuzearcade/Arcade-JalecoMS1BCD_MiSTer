@@ -4,8 +4,8 @@ Numbered `MS1-n`, in the style of the NMK16 and Sand Scorpion lists: each entry
 records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
-**Five are open**: two from M0 answerable off-board, MS1-31 which needs the
-board, and MS1-32 / MS1-33 from M3.
+**Four are open**: two from M0 answerable off-board, MS1-31 which needs the
+board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57.
 
 | | | |
 |---|---|---|
@@ -40,7 +40,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-29 | jt51 samples `write` on `cen`, so a one-clock strobe never raises `busy` | closed |
 | MS1-30 | `screen_flag` bit 4 is a reset line over the whole sound subsystem | closed |
 | MS1-31 | Matching MAME's OKI status means matching a hack MAME admits to | **OPEN** — only real hardware can settle it |
-| MS1-32 | A tile-fetch lookahead trades fidelity for cache tolerance | **OPEN** — needs prediction-based prefetch, not a bigger lead |
+| MS1-32 | A tile-fetch lookahead trades fidelity for cache tolerance | closed — misdiagnosed; it is MS1-57's wrap, and the lookahead is faithful once that is fixed |
 | MS1-33 | A savestate round trip leaves one counter digit behind | **OPEN** — bounded at 25 pixels, cause not yet named |
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
@@ -48,9 +48,9 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-37 | Nine arrays do not infer as RAM; the core does not fit | closed — every array now block RAM; registers 996504 -> 11630 |
 | MS1-38 | quartus_map catches the MS1-34 driver class that Verilator ignores | closed — run synthesis as a linter from M1, not at M4 |
 | MS1-39 | Four OSD features have no core port, so the top level omits them | **OPEN** — M5 work: Pause, High Scores, Cheats, Flip Screen |
-| MS1-40 | The .mra's 2 MHz sample-clock bit is decoded but reaches nothing | **OPEN** — needs an `oki_hz` port on ms1_sound.sv |
-| MS1-41 | hayaosi1's three-player panel does not fit the pad or the .mra button list | **OPEN** — buttons 4/5 keyboard-only, player 3 unmapped |
-| MS1-42 | peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 | **OPEN** — moot until System D's memory map exists |
+| MS1-40 | The .mra's 2 MHz sample-clock bit is decoded but reaches nothing | closed — `oki_2mhz` port on ms1_sound.sv; 48/24 instead of 48/12 |
+| MS1-41 | hayaosi1's three-player panel does not fit the pad or the .mra button list | **OPEN** — buttons 4/5 keyboard-only, player 3 unmapped; peekaboo's four are mapped |
+| MS1-42 | peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 | closed — `in_sys_hi`; System D reads the whole word at 0F0000 |
 | MS1-43 | The protection MCU is a multicycle island timed as if it ran at 48 MHz | closed — SDC multicycle 4; -13.703 ns -> +3.901 ns |
 | MS1-44 | The mode byte fans out further than any other signal and is timed as data | closed — reset tail + false path; -2.153 ns -> passing |
 | MS1-45 | The sound harness stopped building, then stopped running, and said neither | closed — two stale inputs; ym=0 looked like healthy silence |
@@ -64,6 +64,9 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-53 | The core ran before the .mra's <switches> arrived, with `mode` at its idle 3 | closed — reset now waits for index 254, not for a fixed tail |
 | MS1-54 | The .mra's protection field reaches nothing: the core always runs the real MCU | closed for iosim — hayaosi1 and chimeraba boot; monkelf is MS1-55 |
 | MS1-55 | monkelf needs direct input ports, a ROM patch and a PROM rebuild, not a protection model | closed — all four pieces; boots on hardware |
+| MS1-56 | System D has no memory map: `mode == 2` falls into System B's | closed — map, 2 layers, 555 palette, own protection, main-CPU OKI |
+| MS1-57 | The tile-fetch lookahead wrapped on the visible width, not the whole line | closed — every SDRAM-path line began with 8 pixels from column 128; the reference sim runs LOOKAHEAD 0 and could not see it |
+| MS1-58 | The sim Makefiles do not depend on the RTL verilator finds through `-y` | closed — `RTLSRC` wildcard; a fix in ms1_video.sv left the old binary in place and the next run re-measured the bug |
 
 ---
 
@@ -870,7 +873,20 @@ real status would work where MAME's does not — is answerable the same way and
 at the same time.
 
 
-## MS1-32 — A tile-fetch lookahead trades fidelity for cache tolerance (open)
+## MS1-32 — A tile-fetch lookahead trades fidelity for cache tolerance (closed, misdiagnosed)
+
+> **Superseded by MS1-57.** Everything measured below is real; the cause given
+> for it is not. The lookahead does not sample scroll registers at the wrong
+> time and does not trade fidelity for anything. It wrapped on `VIS_W`
+> instead of on the whole raster line, so the eight fetches feeding each
+> line's first eight columns addressed columns 128..135. Re-measured on the
+> same set: **98 of 98** differing pixels satisfy `hw[x] == ref[x+128]`. The
+> original text is kept below because the measurement in it is the evidence
+> that closes it, and because the wrong inference is the instructive part --
+> "the extent tracks the parameter one for one, which is the whole diagnosis"
+> was true of the extent and not of the cause.
+
+### Original text (2026, cause incorrect)
 
 On the SDRAM path a tile byte comes from a cache, and the raster cannot wait
 for a miss. The first attempt gave the fetch a head start by advancing the
@@ -1264,16 +1280,20 @@ This is M5 work, and it is not free — see the M10K figure in the bring-up
 record. `rtl/third_party/hiscore/hiscore.v` and `rtl/cheats.sv` are both still
 in the tree, unreferenced, ready for it.
 
-## MS1-40 — The .mra's 2 MHz sample-clock bit is decoded but reaches nothing (OPEN)
+## MS1-40 — The .mra's 2 MHz sample-clock bit is decoded but reaches nothing (closed)
 
 The game-mode byte's bit 4 says the OKIM6295s run at 2 MHz rather than 4, and
 `tools/gen_ms1bcd_mra.py` sets it for `hayaosi1`, `peekaboo` and `peekaboou`.
-`MS1BCD.sv` decodes it into `oki_2mhz` and stops there: `ms1_sound.sv` divides
-48 MHz by 12 unconditionally, which is the 4 MHz case.
+`MS1BCD.sv` decoded it into `oki_2mhz` and stopped there: `ms1_sound.sv`
+divided 48 MHz by 12 unconditionally, which is the 4 MHz case.
 
-The decode is kept rather than dropped because the .mra already carries the
-bit and the byte is only comprehensible read whole. Quartus reports
-`oki_2mhz` as assigned but never read, which is the intended reminder.
+Closed with System D (MS1-56), because System D needs it: `system_D` derives
+its OKI clock as `XTAL(8'000'000)/4`, so a peekaboo running at 4 MHz plays
+every sample at double speed. `ms1_sound.sv` now takes an `oki_2mhz` input
+and counts to 23 instead of 11; both are exact divisions of clk_sys, so this
+is a terminal value and not a second PLL. The counter widened from four bits
+to five, which moved the sound savestate's scalar 5 packing (`okidiv` now
+occupies bits 4:0, `ymdiv` 6:5, `chip_a0` 7).
 
 Why those three sets run at 2 MHz at all is MS1-8, which MAME does not answer
 either ("unknown OSC + divider combo").
@@ -1301,19 +1321,38 @@ exactly (`chimeraba` is the other `iosim` set and is System C).
 Fixing it properly means a per-set button list in the generator and a third
 joystick, which is a .mra change and a CONF_STR change, not a top-level one.
 
-## MS1-42 — peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 (OPEN)
+## MS1-42 — peekaboo's SYSTEM port is 16 bits and the I/O mux is 8 (closed)
 
-`peekaboo` puts its four buttons in the HIGH byte of a 16-bit SYSTEM port
+`peekaboo` puts its six buttons in the HIGH byte of a 16-bit SYSTEM port
 (MAME `0x0100`-`0x2000`), and `ms1_iomcu.sv`'s port mux is eight bits wide.
-`MS1BCD.sv` maps the low byte -- the four coin inputs and the two starts --
-and the buttons are unreachable.
+`MS1BCD.sv` mapped the low byte -- the four coin inputs and the two starts --
+and the buttons were unreachable.
 
-Its `P1` is not a joystick either but an 8-bit PADDLE, `PORT_MINMAX(0x18,0xE0)`.
-That one *is* wired, from `hps_io`'s `paddle_0`, clamped to the same range.
+The premise turned out to be wrong in a useful way: System D does not read
+SYSTEM through the I/O MCU at all. `megasys1D_map` has `0x0f0000.portr("SYSTEM")`
+as a plain 16-bit port read, so widening the MCU's mux was never the fix. The
+core carries a separate `in_sys_hi` byte from the top level down to
+`ms1_main.sv`, and mode D's read mux returns `{in_sys_hi, in_system}` for the
+whole word. On System B and C the extra byte is tied to zero and unused.
 
-Both are moot until System D has a memory map: `mode == 2` currently falls
-into the `~is_c` branch in `ms1_main.sv`, which is System B's map, so
-`peekaboo` does not run at all yet (docs/PLAN.md 2.5).
+Three things came with it:
+
+- **`P1` and `P2` are 8-bit PADDLES**, `PORT_MINMAX(0x18,0xE0)`, read through
+  System D's own protection port (commands 0x51 and 0x52) rather than the MCU
+  mux. Both are wired, from `hps_io`'s `paddle_0` and `paddle_1`, clamped to
+  the same range. They are ACTIVE HIGH -- an analog value, not a switch -- so
+  unlike every other port here they are not inverted.
+- **The `<buttons>` list is per-set now** (MS1-41's first half). peekaboo's is
+  six names, `Button 1,Button 2,Stage Clear,Option,Start,Coin`, because its
+  third and fourth buttons are panel functions with names of their own.
+- **That moves Start and Coin up one pad bit**, since MiSTer numbers pad
+  buttons by position in the list. `p1_start`/`p1_coin` in `MS1BCD.sv` are
+  named wires for exactly that reason: hard-coding `joystick_0[7]` put Start
+  on peekaboo's "option" button and Coin on Start.
+
+peekaboo's PORT_SERVICE is DSW bit 2, not a SYSTEM bit, so F2 goes there;
+SYSTEM bits 0 and 1 are COIN3 and COIN4, which MAME's comments name "service"
+and "test" but which are coin slots.
 
 ## MS1-43 — The protection MCU is a multicycle island timed as if it ran at 48 MHz (closed)
 
@@ -2054,6 +2093,259 @@ is positioned correctly by eye, but the thresholds (0x0d / 0x0b) have not been
 exercised against a reference capture.
 
 
+## MS1-56 — System D has no memory map: `mode == 2` falls into System B's (closed)
+
+`ms1_main.sv` decoded System B with `~is_c`, so mode D -- and, until MS1-53,
+the idle mode 3 as well -- selected System B's map. `peekaboo` and
+`peekaboou` fetched their reset vector from a region that is only 0x40000
+long on that board's layout and went nowhere.
+
+System D is not a variant of B or C. It is a different board:
+
+- **One 68000 and no sound CPU.** No YM2151 either. The main CPU writes the
+  single OKIM6295 itself, at `0F8001`, low byte only.
+- **Two scroll layers, not three.** `system_D` instantiates `m_tmap[0]` and
+  `m_tmap[1]` only, so layer 2 is *absent* rather than disabled: whatever
+  `active_layers` says about it, nothing is drawn. `ms1_video.sv` already had
+  `nlayers` for this; the core was passing a hard-coded 3.
+- **A different palette format.** `RGBx_555`, where B and C are
+  `RRRRGGGGBBBBRGBx`. `ms1_video.sv` already split on `mode == 2'd2`.
+- **No `global_mask`.** B masks to 20 bits and C to 21; D's map declares
+  neither, so all 24 address bits are decoded.
+- **Its own protection**, at `0x100000`, installed by `init_peekaboo` rather
+  than declared in the map.
+- **One interrupt from the raster, not two.** `system_D` uses
+  `set_vblank_int(megasys1D_irq)`, which is one **level 2** per frame at the
+  start of vblank. There is no scanline callback, so B and C's level 1 at
+  line 96 and level 4 at line 240 do not exist. The protection port raises
+  level 4, and that is the whole interrupt map.
+
+### The two things that are easy to get wrong
+
+**The two scroll windows are inverted with respect to their addresses.** The
+LOWER one, `0D0000`, is MAME's `m_tmap[1]` (share `"scroll2"`); the HIGHER
+one, `0E8000`, is `m_tmap[0]` (share `"scroll1"`). Wiring them in address
+order silently swaps the two layers -- which looks like a priority bug, not
+an address bug. `sim/oracle/traces/peekaboo/layout.txt`, captured from MAME
+long before any of this was written, records it: `layer0 base=0E8000`,
+`layer1 base=0D0000`.
+
+**The palette mirror is 0x3000, and that does not include bit 11.**
+`map(0x0d8000, 0x0d87ff).mirror(0x3000)` means `0D9000`, `0DA000` and
+`0DB000` are the same 2 KB -- and that `0D8800`-`0D8FFF` is *unmapped*, not a
+mirror. Decoding the window as a flat `0D8000`-`0DBFFF` range aliases the
+upper half of each 4 KB block onto the palette.
+
+### The sample bank
+
+`protection_peekaboo_w` latches the word, and if `(val & 0x90) == 0x90` the
+low three bits also pick an OKI sample bank. `megasys1D_oki_map` gives the
+chip a 256 KB window: `00000`-`1FFFF` is the head of the ROM and
+`20000`-`3FFFF` is the bank. `init_peekaboo` configures **entry 7 first**, to
+`ROM+0x20000`, and only then entries 0..6 to `ROM+0x20000 + n*0x20000` -- so
+bank 7 is bank 0's block again, NOT `ROM+0x100000`, which is one byte past
+the end of a 1 MB sample ROM. Taking bank 7 literally is a silent
+off-the-end fetch that shows up only as noise. `ms1_sound.sv` folds it in.
+
+That 1 MB is also why `oki1_rom_addr` widened from 18 bits to 20, through
+`ms1bcd_core.sv` and `ms1bcd_rom_hw.sv`; every other set uses at most the low
+18 and the top two read zero.
+
+### Where the OKI lives
+
+In `ms1_sound.sv`, with the other one, even though System D has no sound
+subsystem to speak of -- so that there is exactly one OKI instance, on one
+`cen`, behind one ROM cache. In mode D the sound 68000 and the YM are held in
+reset (`cpu_rst`), and `main_oki_we`/`main_oki_wdata` from the main CPU drive
+OKI 1 in place of the sound CPU's `0A0000` port. The OKIs stay on `snd_rst`
+rather than `cpu_rst`: `screen_flag` bit 4 resets OKI 1 on System D too
+(`screen_flag_w` tests `m_oki[0].found()`, not the presence of a sound CPU).
+MAME routes System D's single OKI at 1.0, not at B/C's 0.30, so the mixer
+gives mode D its own gain -- at B/C's the game is audible and about 10 dB
+down.
+
+### Measured
+
+`peekaboo`, 50 frames, against `sim/oracle/traces/peekaboo/frames`, on BOTH
+paths -- the reference sim (`sim/rtl/ms1_frames`) and the SDRAM path
+(`sim/rtl/ms1_hw`) -- with the same region images, from one generator run:
+
+| frames | reference sim | SDRAM path |
+|---|---|---|
+| 32-34, 36-38, 40-42, 44-46, 48-49 | **0 differing pixels** | **0 differing pixels** |
+| 35, 39, 43, 47 | 530, 222, 411, 662 | 530, 222, 411, 662 |
+
+The two paths agree to the pixel, including on the four frames that do not
+match MAME. Those four are one blinking element on a different phase: they
+recur every four frames and nothing else in the frame moves.
+
+Frames 25-30 are black in both. Frames 1-24 are MAME's uninitialised-RAM boot
+pattern (57344 lit); a simulation that starts from zeroed memory cannot
+reproduce them.
+
+Also from the SDRAM run: `ym=0 oki1=15 oki2=0` -- the main CPU is driving the
+OKI and nothing is driving the YM, which is the shape System D should have --
+and 0 tile-fetch misses on every layer over 2876913 displayed pixels.
+
+Getting the SDRAM path there took MS1-57, which System D found and which was
+never System D's.
+
+## MS1-57 — the tile-fetch lookahead wrapped on the visible width, not the line (closed)
+
+**Every visible line on the SDRAM path began with eight pixels lifted from
+the middle of itself.** This is not a System D bug; System D is only where it
+finally showed.
+
+`ms1_video.sv` runs the tile fetch `LOOKAHEAD` pixels ahead of the displayed
+pixel and holds each layer's result the same number of pixel ticks in the
+delay line inside `ms1_tilemap.sv`, so the net latency cancels. The fetch runs
+on every pixel tick, **blanking included** -- 384 ticks a line, not 256. So
+the pixel displayed at column x is the one fetched `LOOKAHEAD` ticks earlier,
+and for `x < LOOKAHEAD` that tick fell in the PREVIOUS line's blanking.
+
+The wrap was written against `VIS_W`:
+
+```
+wire       vx_wrap = vx_sum >= VIS_W[9:0];          // 256
+wire [8:0] vxa = vx_wrap ? (vx_sum - VIS_W[9:0]) : vx_sum[8:0];
+```
+
+At `hcount` 376, `vx_sum` is 384 and `vxa` is 384 - 256 = **128**. The eight
+fetches that feed columns 0..7 addressed columns 128..135 instead. Wrapping on
+the whole line gives 384 - 384 = 0, which is what those ticks are for.
+
+```
+wire       vx_wrap = vx_sum >= TOTAL_W[9:0];        // 384
+wire [8:0] vxa = vx_wrap ? (vx_sum - TOTAL_W[9:0]) : vx_sum[8:0];
+```
+
+### How it hid
+
+The reference sim runs `LOOKAHEAD = 0`, where the delay line is bypassed
+entirely (`ms1_tilemap.sv`'s `g_nolead`) and the wrap cannot reach the
+display. `sim/rtl/ms1_frames` is the harness every "pixel-exact against MAME"
+claim in this project has been made with, and it is the one path where this
+code does not run. `sim/rtl/ms1_hw` is the path that renders it, and **its
+pixels had never been compared against MAME for any set** -- it was built for
+the golden-byte audit and the miss counters, and what frame checking it did
+was against the reference sim rather than against the oracle.
+
+It also only shows where columns 0..7 and 128..135 disagree, which on a tiled
+background is nowhere.
+
+### It had already been found, and misdiagnosed
+
+**MS1-32 is this bug.** It was opened when the lookahead went in, with the
+right measurement -- "every differing pixel was in the first N columns; at
+N=16 the diffs spanned x = 0..15, at N=8 exactly x = 0..7" -- and the wrong
+cause. It concluded that `ms1_tilemap` sampling `scroll_x`/`scroll_y`/`ctrl`
+combinationally at stage 0 made the two paths read those registers on
+opposite sides of a mid-line write, and from there that **"the lookahead is
+not a tuning knob with a safe value. Any N > 0 has the same defect, N columns
+wide"** -- so the fix was a second prefetch-only address generator, and the
+issue was left open as a design problem rather than a bug.
+
+The re-measurement that settles it, on the same set and the same harness that
+produced the original number:
+
+```
+avspirit, SDRAM path vs reference sim, N=8, frame 60
+  98 differing pixels, x 0..7, y 85..127
+  hw[y][x] == ref[y][x+128] on 98 of 98
+```
+
+Every one of them. Not a correlation -- the whole set. The rows 85..127 that
+MS1-32 read as "the scanline bands where avspirit writes scroll registers
+during horizontal blanking" are simply the rows where that frame's columns
+0..7 and 128..135 differ; on the rest of the frame the bug is present and
+invisible, exactly as it is on every other set.
+
+The lookahead is a tuning knob with a safe value after all, and the second
+address generator MS1-32 called for is not needed.
+
+### How it was found
+
+Not by looking for it. `peekaboo` came up 54 pixels short of MAME on the SDRAM
+path and **pixel-exact on the reference sim** -- the same ROM images, from the
+same generator, in both. That gap is the whole diagnosis: a difference that
+exists in one path and not the other is in the path, not in the game. Reading
+off the coordinates -- rows 153-159 and 184-190, columns 0-6, seven wide --
+and then testing the one hypothesis those coordinates suggest settled it in a
+single comparison:
+
+```
+153 hw  x0-7       F77B00 F77B00 F77B00 F77B00 F77B00 F77B00 F77B00 000884
+153 ref x128-135   F77B00 F77B00 F77B00 F77B00 F77B00 F77B00 F77B00 FF94AD
+```
+
+Seven columns in `peekaboo`, because its column 7 happened to agree; `avspirit`
+shows all eight.
+
+Then the first fix appeared not to work: the run produced **exactly the same
+54 pixels**, and for a few minutes the obvious reading was that the diagnosis
+was wrong. It was not. `make` had not rebuilt -- `rtl/jaleco/ms1_video.sv` was
+not a prerequisite of any sim Makefile, because verilator finds it through
+`-y`. That is MS1-58, and it is worth stating plainly: **the failed
+verification of a correct fix looks exactly like a wrong diagnosis.** Checking
+the binary's timestamp against the source's took ten seconds and should have
+been the first thing done, not the fourth.
+
+### Verified
+
+| measurement | before | after |
+|---|---|---|
+| `peekaboo`, SDRAM path vs MAME, steady frames | 54 px each | **0** |
+| `peekaboo`, the four blink frames | 584 276 465 716 | 530 222 411 662 -- the reference sim's own numbers |
+| `avspirit`, SDRAM path vs reference sim, 70 frames | 58/70 identical, 98 px each on the other 12 | **70/70 identical** |
+| `avspirit`, tile-fetch misses over 4014080 displayed pixels | L0 0, L1 0, L2 0 | L0 0, L1 0, L2 **103** (0.00257 %) |
+
+Both paths now agree to the pixel on both sets.
+
+**The fix costs a little cache warming.** The old wrap spent the blanking
+period re-fetching the next row's columns 8..135, which was wrong for the
+eight pixels that reached the screen and useful for the rest of the line; the
+new one fetches columns 256..383 of the current row, which is discarded.
+`avspirit` picks up 103 layer-2 misses a run where it had none. They change no
+pixel -- the frames are 70/70 identical -- and 0.0026 % is far inside what
+docs/PLAN.md 4.B.3 asks of the miss measure, so this is recorded rather than
+chased. A blanking sweep that warms 8..135 AND lands the last eight ticks on
+0..7 is possible (`vxa = vx_sum - (VIS_W - LOOKAHEAD)` in the middle region);
+it is a second special case in the expression that just produced this bug, and
+it buys 103 pixels of cache warming.
+
+The lesson is docs/PLAN.md 4.I's, in its sharpest form so far: a gate that
+runs only the configuration you do not ship measures the configuration you do
+not ship. `LOOKAHEAD` was introduced precisely because the SDRAM path needs
+it, and then nothing compared the SDRAM path's pixels against MAME until a
+game happened to have content in the eight columns it corrupts.
+
+## MS1-58 — the sim Makefiles do not depend on the RTL verilator finds (closed)
+
+Every `sim/rtl/*/Makefile` named two or three `.sv` files as prerequisites and
+let verilator find the rest through `-y`. `make` cannot see a `-y` search
+path, so editing `rtl/jaleco/ms1_video.sv` -- or `ms1_tilemap.sv`, or
+`ms1_sprites.sv`, or `ms1_prio.sv`, none of which was ever a prerequisite --
+relinked nothing and left the previous binary in place.
+
+That is how MS1-57 nearly got closed twice: the fix went in, `make` printed
+nothing, the run produced **exactly the same 54 pixels**, and for a few
+minutes the obvious conclusion was that the diagnosis was wrong. The binary's
+timestamp was twenty minutes older than the source.
+
+This is MS1-48 one layer down, and the same rule applies: **a build that can
+silently reuse a stale artifact will eventually be measured as if it were
+fresh.** MS1-48 fixed it for Quartus by grepping the log instead of trusting
+the exit code. Here the prerequisite list is replaced with a wildcard over
+every directory on the `-y` path:
+
+```make
+RTLSRC := $(wildcard $(RTL)/*.sv $(RTL)/*.v $(RTL)/ms1bcd/*.sv $(RTL)/ms1bcd/*.vh \
+                     $(RTL)/jaleco/*.sv $(RTL)/tlcs90/*.sv $(RTL)/savestate/*.sv)
+```
+
+Over-broad on purpose: a needless rebuild costs 40 seconds and a skipped one
+costs a wrong measurement.
+
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55
 
 Every shipped set whose board this core implements now boots on the
@@ -2093,10 +2385,13 @@ which is right -- the core outputs the board's native ROT90 raster and the
 rotation happens in the framebuffer downstream), and bigstrik on the Jaleco
 copyright screen, which is why two of its three samples are nearly black.
 
-**System D, 0 of 2.** `peekaboo` and `peekaboou` do not run and are not
-expected to: `mode == 2` still falls into the `~is_c` branch in
-`ms1_main.sv`, which is System B's memory map. PLAN 2.5 is unstarted.
-MS1-42 (the 16-bit SYSTEM port) and the paddle sit behind that.
+**System D, not yet on the board.** `peekaboo` runs in simulation as of
+MS1-56 and is **pixel-exact against MAME on both paths** -- the reference sim
+and the SDRAM path agree with each other and with the oracle on every steady
+frame -- but it has not been loaded on the DE10-Nano, so this table has no
+row for it yet. MS1-40 (the 2 MHz sample clock), MS1-42 (the 16-bit SYSTEM
+port and the paddles), MS1-57 (the lookahead wrap) and MS1-58 (the sim
+Makefiles' dependencies) all closed with it.
 
 ### What this does and does not establish
 
@@ -2105,3 +2400,12 @@ raster and video pipeline are right enough to boot and animate. It says
 nothing about frame accuracy (only `avspirit` has a reference comparison,
 and `hayaosi1`'s does not match -- see MS1-54), nothing about sound on
 hardware, and nothing about inputs, savestates or the rest of the M4 gates.
+
+**And the frame accuracy it does claim was measured on the wrong path.**
+MS1-57 was eight wrong pixels at the start of every line, live in every one
+of the screenshots above and in the bitstream that produced them, and
+invisible to every gate because the gates run `sim/rtl/ms1_frames`, which is
+the one configuration that does not execute that code. The SDRAM path's
+pixels are now compared against the oracle directly, not only against the
+reference sim, and that should be a standing gate rather than something done
+once for System D.
