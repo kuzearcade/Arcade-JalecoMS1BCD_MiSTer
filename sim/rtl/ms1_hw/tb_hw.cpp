@@ -100,6 +100,7 @@ int main(int argc, char **argv) {
 		top.in_p1 = 0xFF; top.in_p2 = 0xFF; top.in_system = 0xFF;
 		top.in_dsw1 = envu("TB_DSW1", 0xFF); top.in_dsw2 = envu("TB_DSW2", 0xFD);
 		std::vector<std::vector<uint32_t>> frames;
+		unsigned prev_mcuacc = 0; size_t froze_at = 0;
 		std::vector<uint32_t> cur(W * H, 0);
 		size_t px = 0;
 		uint64_t guard2 = 0;
@@ -117,6 +118,21 @@ int main(int argc, char **argv) {
 					pl0 = top.dbg_l0_miss; pl1 = top.dbg_l1_miss; pl2 = top.dbg_l2_miss;
 				}
 				if (px) frames.push_back(cur);
+				// MS1-51: IRQ2 per frame, the number the reference sim puts at
+				// about 15 once the game is running.
+				// MS1-51: the first frame at which the MCU's read strobe
+				// stops advancing. Everything after that is the freeze.
+				if (top.dbg_mcuacc == prev_mcuacc && prev_mcuacc && !froze_at) {
+					froze_at = frames.size();
+					printf("  *** mcuacc frozen at %u, frame %zu ***\n",
+					       top.dbg_mcuacc, froze_at);
+				}
+				prev_mcuacc = top.dbg_mcuacc;
+				if (frames.size() && frames.size() % 20 == 0)
+					printf("  frame %3zu: irq2=%u (%.1f/frame)  int1e=%u  mcuacc=%u\n",
+					       frames.size(), top.dbg_irq2,
+					       top.dbg_int1e ? (double)top.dbg_irq2 / top.dbg_int1e : 0.0,
+					       top.dbg_int1e, top.dbg_mcuacc);
 				std::fill(cur.begin(), cur.end(), 0);
 				px = 0;
 			}
@@ -125,6 +141,22 @@ int main(int argc, char **argv) {
 				cur[px++] = top.rgb & 0xFFFFFF;
 		}
 		size_t nonblack = 0, lastnb = 0;
+		if (froze_at) {
+			printf("\n--- port 3 after the freeze (req/ack/addr, mcu_ready, srom_ready) ---\n");
+			int shown = 0; unsigned long long g = 0;
+			int lastreq = -1, lastack = -1;
+			while (shown < 24 && g++ < 4000000ULL) {
+				tick();
+				if (top.dbg_p3_req != lastreq || top.dbg_p3_ack != lastack) {
+					printf("  req=%d ack=%d addr=%06x mcu_rdy=%d srom_rdy=%d\n",
+					       top.dbg_p3_req, top.dbg_p3_ack, top.dbg_p3_addr,
+					       top.dbg_mcu_ready, top.dbg_srom_ready);
+					lastreq = top.dbg_p3_req; lastack = top.dbg_p3_ack; shown++;
+				}
+			}
+			printf("  (after %llu further clocks: req=%d ack=%d mcu_rdy=%d srom_rdy=%d)\n",
+			       g, top.dbg_p3_req, top.dbg_p3_ack, top.dbg_mcu_ready, top.dbg_srom_ready);
+		}
 		for (auto &f : frames) {
 			size_t c = 0; for (auto v : f) if (v) c++;
 			if (c) nonblack++;

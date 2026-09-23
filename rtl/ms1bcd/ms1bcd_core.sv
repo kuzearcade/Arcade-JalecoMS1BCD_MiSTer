@@ -78,6 +78,9 @@ module ms1bcd_core #(
 	output      [15:0]  tr_data,
 	output              tr_we, tr_valid,
 	output      [31:0]  dbg_irq2, dbg_int1e, dbg_mcuacc, dbg_mcubank,
+	output      [15:0]  dbg_mcu_pc,
+	output              dbg_mcu_halt, dbg_mcu_if,
+	output      [10:0]  dbg_mcu_irqp, dbg_mcu_mask,
 	// ---- savestate snapshot bus (see docs/m3-gate4.md for the image map)
 	input               ss_freeze,
 	input               ss_resume,
@@ -191,7 +194,9 @@ module ms1bcd_core #(
 		.slatch_we(slatch_we), .slatch_data(slatch_data),
 		.dbg_acc(dbg_acc), .dbg_vregw(dbg_vregw), .dbg_vramw(dbg_vramw),
 		.dbg_irq2(dbg_irq2), .dbg_int1e(dbg_int1e),
-		.dbg_mcuacc(dbg_mcuacc), .dbg_mcubank(dbg_mcubank)
+		.dbg_mcuacc(dbg_mcuacc), .dbg_mcubank(dbg_mcubank),
+		.dbg_mcu_pc(dbg_mcu_pc), .dbg_mcu_halt(dbg_mcu_halt), .dbg_mcu_if(dbg_mcu_if),
+		.dbg_mcu_irqp(dbg_mcu_irqp), .dbg_mcu_mask(dbg_mcu_mask)
 	);
 
 	assign dbg_active = r_act;

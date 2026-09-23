@@ -502,6 +502,39 @@ reg  [15:0] aud_sw0 = 0;
 reg   [2:0] aud_rdy_n = 3'd0;
 reg  [31:0] aud_main2 = 32'd0;
 reg  [15:0] aud_wm = 0;
+
+// ---- MS1-51: is port 3 still turning requests into acks, and is the MCU
+// still executing? Port 3 carries the sound 68000, the protection MCU and
+// both OKIs. On the board the MCU's own read strobe (dbg_mcuacc) STOPS while
+// the raster keeps running, and ms1_iomcu gates the MCU's clock enable on its
+// ROM cache being ready -- so a port-3 request that never completes freezes
+// the MCU outright, which is what these count.
+reg [31:0] p3_reqs = 0, p3_acks = 0;
+reg        sd3_req_d = 0, sd3_ack_d = 0;
+reg [19:0] p3_wait = 0;
+reg        p3_stuck = 1'b0;
+always @(posedge clk_sys) begin
+	sd3_req_d <= sd3_req; sd3_ack_d <= sd3_ack;
+	if (sd3_req & ~sd3_req_d) p3_reqs <= p3_reqs + 1'd1;
+	if (sd3_ack & ~sd3_ack_d) p3_acks <= p3_acks + 1'd1;
+	// a request outstanding for 20 bits of clk_sys (22 ms) is not latency
+	if (sd3_req && !sd3_ack) begin
+		if (&p3_wait) p3_stuck <= 1'b1; else p3_wait <= p3_wait + 1'd1;
+	end else p3_wait <= 20'd0;
+end
+
+// The MCU has stopped if its read strobe has not moved for 2^23 clk_sys
+// (175 ms) after it had been running.
+reg [31:0] mcuacc_d = 0;
+reg [22:0] mcu_idle = 0;
+reg        mcu_stuck = 1'b0;
+always @(posedge clk_sys) begin
+	mcuacc_d <= dbg_mcuacc;
+	if (dbg_mcuacc != mcuacc_d) mcu_idle <= 23'd0;
+	else if (|dbg_mcuacc) begin
+		if (&mcu_idle) mcu_stuck <= 1'b1; else mcu_idle <= mcu_idle + 1'd1;
+	end
+end
 reg         aud_pass2 = 1'b0;
 reg   [2:0] aud_st   = 3'd0;
 reg   [7:0] aud_dly  = 8'd0;
@@ -810,7 +843,7 @@ crt_chain #(
 //   6  any PROM byte taken  14  reset
 //   7  switches seen (254)  15  sdram_ready has EVER been low
 // ------------------------------------------------------------------
-localparam DBG_OVERLAY = 0;   // 1 paints the bring-up overlay over the top 144 lines
+localparam DBG_OVERLAY = 1;   // 1 paints the bring-up overlay over the top 144 lines
 
 // clk_sys liveness and core liveness, carried into clk_vid by toggle flags.
 reg [20:0] dbg_syscnt = 0;
@@ -860,7 +893,7 @@ always @(posedge clk_vid) begin
 end
 
 wire [15:0] dbg_bits = {
-	dbg_sd_wasdown, reset, dbg_rom_seen, dbg_pix_seen,
+	mcu_stuck, p3_stuck, dbg_rom_seen, dbg_pix_seen,
 	|rast_alive, |sys_alive, mode[1], mode[0],
 	dbg_sw_seen, (dbg_prom_bytes != 0), (dbg_dl_bytes > 32'd1000000), (dbg_dl_bytes != 0),
 	aud_done, dbg_dl_seen, sdram_ready, pll_locked
@@ -882,9 +915,12 @@ end
 // the core's own counters, MSB at the left, so "is it zero?" and "is it
 // counting?" are both readable from one screenshot.
 //
-//   1  main word0     (expect 0008)   4  main sum PASS 2 (expect E54D)
-//   2  main word 0x1000 (expect 07BC)   5  snd sum lo      (expect 42CA)
-//   3  main sum PASS 1 (expect E54D)    6  mcuacc  7  irq2  8  int1e
+//   1  port-3 requests   4  vregw   7  irq2
+//   2  port-3 acks       5  vramw   8  int1e
+//   3  mcuacc            6  video enable register
+//
+// Rows 1 and 2 are the point: if the request count runs away from the ack
+// count, port 3 stopped completing transactions.
 //
 // The MCU row is the control: it read back exactly right on the first try,
 // which is what says the download, the SDRAM and a byte-wide cache path are
@@ -895,12 +931,12 @@ end
 reg [15:0] dbg_row;
 always @(*) case (dbg_y[7:4])
 	4'd0: dbg_row = dbg_bits;
-	4'd1: dbg_row = aud_w0;
-	4'd2: dbg_row = aud_wm;
-	4'd3: dbg_row = aud_main[15:0];
-	4'd4: dbg_row = aud_main2[15:0];
-	4'd5: dbg_row = aud_snd[15:0];
-	4'd6: dbg_row = dbg_mcuacc[15:0];
+	4'd1: dbg_row = p3_reqs[15:0];
+	4'd2: dbg_row = p3_acks[15:0];
+	4'd3: dbg_row = dbg_mcuacc[15:0];
+	4'd4: dbg_row = dbg_vregw[15:0];
+	4'd5: dbg_row = dbg_vramw[15:0];
+	4'd6: dbg_row = dbg_active;
 	4'd7: dbg_row = dbg_irq2[15:0];
 	4'd8: dbg_row = dbg_int1e[15:0];
 	default: dbg_row = 16'd0;

@@ -31,13 +31,19 @@
 //     input, in the same bit order the CPU expects (see tlcs90.sv's port
 //     comment): bit0=INT0, bit1=T0, bit2=T1, bit3=T2, bit4=T3, bit5=T4,
 //     bit6=INT1, bit7=T5, bit8=INT2, bit9=RX, bit10=TX.
-//   - IRF-clear (0xffc3 write) is accepted but currently a no-op: our
-//     only real IRQ sources (the timers) already auto-clear on take via
-//     the CPU core's own dispatch logic (matching clear_irq() being
-//     called from take_interrupt() for every source except INT0 in level
-//     mode) — manual IRF clearing only matters for sources not modeled
-//     yet (INT0/INT1/INT2/serial), so this is a real, narrow gap, not a
-//     blanket stub.
+//   - IRF-clear (0xffc3 write) clears the named source's request flag,
+//     matching MAME's irf_clear_w(): the written byte is an interrupt
+//     index + 2, so `clear_irq(data - 2)` in MAME's enum order, which is
+//     our irq_pending bit (data - 5) for the eleven maskable sources.
+//     Indices below INT0 (SWI/NMI/WD) have no bit here and are ignored,
+//     which is exactly what not modelling them means.
+//
+//     This was a no-op until 2026-09-22, on the reasoning that only the
+//     timers were real sources and they auto-clear on dispatch. That held
+//     for the NMK004, whose INT0/INT1 are unused. On Mega System 1 they
+//     are the ONLY sources -- INT0 is the 68000's protection write and
+//     INT1 the display-enable edge -- so a firmware IRF write that did
+//     nothing left a stale request pending. See MS1-51.
 //   - Watchdog (WDMOD/WDCR), serial (SCMOD/SCCR/SCBUF — not even mapped
 //     for this specific TLCS-90 variant in the reference), ADC
 //     (ADREG/ADMOD), stepping-motor mode (SMMOD's *functional* effect,
@@ -109,6 +115,8 @@ module nmk004_periph (
 	output reg [7:0] rdata,
 
 	output [10:0] irq_mask, // to the CPU core's irq_mask input
+	output [10:0] irq_clr,  // one-hot: clear these pending flags this cen
+
 	output [10:0] irq_req,  // to the CPU core's irq_req input (timer pulses)
 
 	output [7:0] p4_latch,  // bit0 = future 68000-reset drive, see header
@@ -542,7 +550,7 @@ module nmk004_periph (
 			case (reg_addr)
 				6'h01: p1 <= wdata;
 				6'h02: p01cr <= wdata;
-				6'h03: ; // IRF clear — accepted, no-op, see header
+				6'h03: ; // IRF clear — handled combinationally by irq_clr below
 				6'h04: p2 <= wdata;
 				6'h05: p2cr <= wdata;
 				6'h06: p3 <= wdata;
@@ -581,5 +589,12 @@ module nmk004_periph (
 			endcase
 		end
 	end
+
+	// IRF clear (0xFFC3, reg_addr 0x03). MAME: the byte is an interrupt
+	// index + 2; our bit is that index - 3, hence data - 5.
+	wire        irf_we  = we && (reg_addr == 6'h03);
+	wire [7:0]  irf_sel = wdata - 8'd5;
+	assign irq_clr = (irf_we && wdata >= 8'd5 && wdata <= 8'd15)
+	               ? (11'd1 << irf_sel[3:0]) : 11'd0;
 
 endmodule

@@ -59,6 +59,8 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-48 | A failed Quartus compile leaves the previous .rbf and reports through a zero exit | closed — build.sh greps the log, not the exit code |
 | MS1-49 | The .mra shipped the 68000 image byte-swapped, and --check validated it against itself | closed — MEASURED on hardware; my first diagnosis had it backwards |
 | MS1-50 | Both 68000s handed the ROM cache their raw bus address | closed — held while the bus is not selecting ROM; SS-12 and NMK-21 are the same bug |
+| MS1-51 | The main 68000 crashes at frame ~309 and the game traps on its watchdog | **OPEN** — narrowed to a 68000 crash in the reference sim; NOT hardware-specific |
+| MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
 
 ---
 
@@ -1534,54 +1536,121 @@ check passes forever; a cross-check against an independently produced artefact
 does not. The sibling project's `.mra` looked like evidence and was not --
 only the measurement was.
 
-## MS1-51 — avspirit boots on hardware and traps in its own watchdog handler (OPEN)
+## MS1-51 — The main 68000 crashes at frame ~309; the watchdog trap is a symptom (OPEN)
 
-With MS1-49 (the byte-swapped 68000 image) and MS1-50 (the unheld cache
-address) fixed, `avspirit` runs on the board: the 68000 executes its own boot
-code, the tilemaps, palette and text layer all draw, and the protection MCU is
-answering (IRQ2 went from **1** to **3,634**).
+The board boots `avspirit` and then sits on the game's own `ERROR TRAPED /
+WATCH DOG TIMER` screen. The next measurement this entry asked for -- IRQ
+counts against the reference sim -- has been taken, and it moved the fault a
+long way from where it looked.
 
-It then stops on the game's own diagnostic screen:
+### What the comparison showed
 
-```
-ERROR  TRAPED
-WATCH DOG  TIMER
-SP  +0  +2  +4  +6
-+0 : 2104 0000 4274 0000
-+8 : 1046 0000 001F 0020
-```
+Per-frame IRQ2 (the MCU answering the 68000's protection handshake):
 
-and stays there indefinitely -- three screenshots 12 s apart are pixel-identical.
-MAME at the equivalent point is already showing the Jaleco logo
-(`sim/oracle/traces/avspirit/frames/f199.raw`), so this is a real divergence,
-not a boot screen the game always shows.
+| | IRQ2 per frame |
+|---|---:|
+| reference sim | ~15 |
+| hardware-path sim | ~14 |
+| board | ~1 |
 
-**It is not the ROM data.** The golden-byte audit now walks all three CPU
-regions through the real caches and the real controller and every one matches
-a sum computed off-board from the `.mra` stream:
+The board figure is an artefact of averaging a cumulative counter across a
+stall: IRQ2 is **frozen**, not slow. Two captures 30 s apart both read
+`irq2=3634` while `int1e` advanced 3121 -> 3391. The game runs normally for
+about 260 frames and then stops.
 
-| region | measured | expected |
+### It is not the hardware ROM path
+
+Both simulations reproduce it:
+
+| | IRQ2 freezes at | MCU stops executing at |
 |---|---|---|
-| main 68000 | 0xE54D | 0xE54D |
-| sound 68000 | 0x42CA | 0x42CA |
-| MCU internal | 0xD4F1 | 0xD4F1 |
+| hardware-path sim | frame ~310, irq2=3635 | frame 364 |
+| **reference sim** | **frame 310, irq2=3874** | frame 357 |
+| board | (irq2=3634) | — |
 
-(The audit's FIRST pass over the main region disagrees and its second agrees,
-every time. Port 0 carries the download as well as the main cache, and the
-first pass starts the moment the transfer ends. The instrument is unreliable
-there, the data is not -- which is exactly the distinction a second pass was
-added to make.)
+The **reference** simulation -- plain arrays, no SDRAM, no caches -- fails the
+same way. So every hardware-path suspicion was wrong: the ROM byte order, the
+cache sizes, port-3 arbitration, refresh. A trace of port 3 taken after the
+freeze shows it perfectly healthy, req/ack alternating, addresses advancing,
+with `mcu_rom_ready` HIGH.
 
-**What MAME says the mechanism is.** `megasys1.cpp`'s own notes describe a
-SOFTWARE watchdog: a word in work RAM incremented by the level-4 interrupt and
-cleared by the main loop, trapping when it passes 0xb. So the main loop is not
-getting round often enough, or level 4 is arriving too often. This core
-implements no watchdog of its own, hardware or software -- `grep -i watchdog`
-over `rtl/` finds nothing -- so nothing here resets the machine the way Sand
-Scorpion's SS-7 watchdog does; the game simply traps.
+M2 gate 2 and M3 ran 70 frames. This is at 310. Nothing had ever looked.
 
-**Next step**, and the instrument for it already exists: compare the per-frame
-IRQ1 / IRQ2 / IRQ4 counts on the board against the same counters in the
-reference simulation over the same span. The board currently shows IRQ2 at
-about 1.07 per display-enable edge (3,634 against 3,391), which is the first
-number to check against the sim rather than to reason about.
+### What actually happens, in order
+
+| frame | `dbg_active` | VRAM writes | |
+|---|---|---:|---|
+| 308 | 000F | 35,447 | normal, ~10 writes/frame, layer 0 scrolling |
+| 309 | 000F | 45,604 | a 10,000-write burst -- a scene transition |
+| 310 | **4E7F** | 50,818 | garbage in the layer-enable register |
+| 311 | **4E7F** | 55,994 | |
+| 312 | 000F | 56,149 | and frozen from here on |
+
+`0x4E7F` is a 68000 opcode pattern, not a layer-enable value: **the main CPU
+wrote code into a video control register.** Scrolling stops at the same frame
+(`t0x` sticks at 0x00F7) and VRAM writes stop entirely.
+
+So the 68000 goes off the rails during a scene transition at frame 309. Every
+later symptom follows from that: it stops servicing the protection handshake,
+so IRQ2 stops; the MCU idles in its main loop (0x01B8-0x01CC) for 47 frames
+and then takes its own error path -- `DI; HALT` at ROM 0x0227, which the
+firmware image really does contain (`02 1C E4 05 1C CA 05 01`, twice) -- and
+the 68000's software watchdog, a work-RAM word incremented by the level-4
+interrupt, passes its limit and traps.
+
+**The MCU halt is not a core bug.** It halts with `if=0` and INT1 pending, and
+MAME's `check_interrupts()` returns early on `!(F & IF)` and only leaves HALT
+via `take_interrupt()` -- so MAME would sit there too. The firmware asked to
+stop.
+
+### Where to look next
+
+The 68000, at frame 309, in whatever routine runs the transition. The
+instrument is already there: `tr_addr`/`tr_data`/`tr_we` in `ms1_main.sv` trace
+every bus cycle, and `MS1_TRACE` in the frames harness prints them. Capturing
+the last few thousand cycles before the first write of `0x4E7F` to the video
+register, and comparing against the same window from MAME's bus trace
+(`sim/oracle/ms1_bustrace.lua`), should name the divergence.
+
+A wrong protection response is the obvious candidate -- these games use the
+MCU's answers to build pointers, so one bad word becomes a bad jump -- but
+that is a hypothesis, and this entry has already cost two of those.
+
+
+
+## MS1-52 — The MCU's IRF register never cleared an interrupt request (closed)
+
+Found while chasing MS1-51. `tlcs90_periph_ref.sv` treated a write to IRF
+(0xFFC3, register 0x03) as a no-op, with a comment explaining why that was
+acceptable:
+
+> manual IRF clearing only matters for sources not modeled yet
+> (INT0/INT1/INT2/serial), so this is a real, narrow gap, not a blanket stub.
+
+That reasoning was sound for the NMK004, where the only live sources are
+timers that auto-clear on dispatch. On Mega System 1 the MCU's only sources
+**are** INT0 and INT1 -- the 68000's protection write and the display-enable
+edge -- so the gap was squarely in the path.
+
+MAME implements it:
+
+```cpp
+void tlcs90_device::irf_clear_w(uint8_t data)
+{
+    if (data >= int(INTSWI) + 2 && data < int(INTMAX) + 2)
+        clear_irq(data - 2);
+}
+```
+
+The written byte is an interrupt index + 2. In MAME's enum INT0 is 3 and our
+`irq_pending` bit 0 is INT0, so our bit is `data - 5` across all eleven
+maskable sources. The peripheral now decodes the write into a one-hot
+`irq_clr` and the CPU applies it as
+`irq_pending <= (irq_pending | irq_req) & ~irq_clr`, leaving the dispatch
+clear later in program order so it still wins for the bit it takes.
+
+**This did not fix MS1-51** -- the reference sim still freezes at frame 310
+with irq2=3874, identically -- and the 70-frame frame comparison is unchanged
+before and after. It is kept because it is a real divergence from the
+reference model that was documented as a known gap, and MS1 is the first user
+to put those two interrupt sources on the critical path.

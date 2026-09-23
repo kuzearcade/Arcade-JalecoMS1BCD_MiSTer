@@ -42,6 +42,15 @@ module ms1_hw_top (
 	output [31:0] dbg_l0_miss, dbg_l1_miss, dbg_l2_miss, dbg_pix,
 	output [31:0] dbg_ym_writes, dbg_oki1_writes, dbg_oki2_writes,
 	output [15:0] dbg_l2_first_v, dbg_l2_first_h,
+	// MS1-51: the MCU's own throughput on the hardware ROM path. The
+	// reference sim serves its ROM from an array, so the MCU never stalls
+	// there; here it stalls on every cache miss (cen_eff in ms1_iomcu.sv), and
+	// IRQ2 -- which the 68000's main loop waits on -- is the visible rate.
+	output [31:0] dbg_irq2, dbg_int1e, dbg_mcuacc,
+	// MS1-51 trace: port 3 carries the sound 68000, the MCU and both OKIs.
+	output        dbg_p3_req, dbg_p3_ack,
+	output [24:1] dbg_p3_addr,
+	output        dbg_mcu_ready, dbg_srom_ready,
 	output [31:0] dbg_spr_pass_cycles,
 	output [15:0] dbg_spr_late_swaps
 );
@@ -51,6 +60,11 @@ module ms1_hw_top (
 	wire        SDRAM_DQML, SDRAM_DQMH, SDRAM_nCS, SDRAM_nCAS, SDRAM_nRAS,
 	            SDRAM_nWE, SDRAM_CLK, SDRAM_CKE;
 
+	assign dbg_p3_req  = p3_req;
+	assign dbg_p3_ack  = p3_ack;
+	assign dbg_p3_addr = p3_addr;
+	assign dbg_mcu_ready  = c_mcu_ready;
+	assign dbg_srom_ready = c_srom_ready;
 	wire [24:1] p0_addr, p1_addr, p2_addr, p3_addr;
 	wire        p0_wrl, p1_wrl, p2_wrl, p3_wrl;
 	wire        p0_wrh, p1_wrh, p2_wrh, p3_wrh;
@@ -137,6 +151,7 @@ module ms1_hw_top (
 		.dbg_l0_miss(dbg_l0_miss), .dbg_l1_miss(dbg_l1_miss),
 		.dbg_l2_miss(dbg_l2_miss), .dbg_pix(dbg_pix),
 		.dbg_l2_first_v(dbg_l2_first_v), .dbg_l2_first_h(dbg_l2_first_h),
+		.dbg_irq2(dbg_irq2), .dbg_int1e(dbg_int1e), .dbg_mcuacc(dbg_mcuacc),
 		.dbg_spr_pass_cycles(dbg_spr_pass_cycles),
 		.dbg_spr_late_swaps(dbg_spr_late_swaps)
 	);

@@ -79,6 +79,10 @@ module ms1_iomcu (
 	// probes for the replay harness
 	output     [15:0] dbg_addr,
 	output      [3:0] dbg_bank,
+	output     [15:0] dbg_mcu_pc,
+	output            dbg_mcu_halt,
+	output     [10:0] dbg_mcu_irqp, dbg_mcu_mask,
+	output            dbg_mcu_if,
 	output            dbg_rd,
 	output            dbg_wr,
 	output      [7:0] dbg_din
@@ -94,7 +98,7 @@ module ms1_iomcu (
 	wire  [7:0] dout;
 	reg   [7:0] din;
 
-	wire [10:0] irq_mask, irq_req_p;
+	wire [10:0] irq_mask, irq_req_p, irq_clr;
 	wire  [3:0] bx, by;
 	wire  [7:0] preg_rdata;
 	wire        p2_we;
@@ -219,19 +223,22 @@ module ms1_iomcu (
 		.clk(clk), .cen(cen_eff), .reset(reset),
 		.din(din), .dout(dout), .addr(addr), .addr_bank(addr_bank),
 		.mem_rd(mem_rd), .mem_wr(mem_wr),
-		.nmi(1'b0), .irq_req(irq_req), .irq_mask(irq_mask),
+		.nmi(1'b0), .irq_req(irq_req), .irq_mask(irq_mask), .irq_clr(irq_clr),
 		.ix_bank(bx), .iy_bank(by),
 		.ss_freeze(ss_freeze), .ss_frozen(ss_frozen),
 		.ss_sel(ss_addr[4:0]), .ss_wr(ss_w & ss_cpu), .ss_wdata(ss_wdata),
-		.ss_rdata(ss_cpu_rdata)
+		.ss_rdata(ss_cpu_rdata),
+		.dbg_pc(dbg_mcu_pc), .dbg_valid(), .dbg_halt(dbg_mcu_halt),
+		.dbg_irq_pending(dbg_mcu_irqp), .dbg_if(dbg_mcu_if)
 	);
+	assign dbg_mcu_mask = irq_mask;
 
 	nmk004_periph u_preg (
 		.clk(clk), .cen(cen_eff), .reset(reset),
 		.reg_addr(addr[5:0]), .wdata(dout),
 		.we(cen_eff & mem_wr & sel_preg), .re(cen_eff & mem_rd & sel_preg),
 		.rdata(preg_rdata),
-		.irq_mask(irq_mask), .irq_req(irq_req_p),
+		.irq_mask(irq_mask), .irq_req(irq_req_p), .irq_clr(irq_clr),
 		.p4_latch(), .bx(bx), .by(by),
 		.p5_ext_en(1'b0), .p5_ext_val(8'h00),
 		.p6_ext_en(1'b0), .p6_ext_val(8'h00),

@@ -177,6 +177,8 @@ module tlcs90 (
 	// see the module's opcode-scope note above (still deferred).
 	input        nmi,
 	input [10:0] irq_req,
+	// One-hot pending-flag clear from the peripheral's IRF register (MS1-51).
+	input [10:0] irq_clr,
 	input [10:0] irq_mask,
 
 	// BX/BY's low nibble (0xffec/0xffed in a peripheral module), applied to
@@ -192,6 +194,9 @@ module tlcs90 (
 	output reg [15:0] dbg_pc,
 	output reg        dbg_valid,
 	output             dbg_halt,
+	// MS1-51: what the halt is waiting for.
+	output      [10:0] dbg_irq_pending,
+	output             dbg_if,
 
 	// debug: live register state, sampled alongside dbg_pc/dbg_valid —
 	// purely additive, for root-causing oracle divergences against MAME's
@@ -237,6 +242,8 @@ module tlcs90 (
 	reg halt_r;
 	reg after_ei;
 	assign dbg_halt = halt_r;
+	assign dbg_irq_pending = irq_pending;
+	assign dbg_if = f[IFB];
 	assign dbg_a  = a;
 	assign dbg_f  = f;
 	assign dbg_hl = hl;
@@ -1418,7 +1425,9 @@ module tlcs90 (
 		// bit on the same edge if both happen to coincide).
 		nmi_prev <= nmi;
 		if (nmi && !nmi_prev) nmi_pending <= 1'b1;
-		irq_pending <= irq_pending | irq_req;
+		// The dispatch clear below lands later in program order and so still
+		// wins for the bit it takes, as its own comment describes.
+		irq_pending <= (irq_pending | irq_req) & ~irq_clr;
 
 		if (reset) begin
 			state <= S_FETCH_OP;

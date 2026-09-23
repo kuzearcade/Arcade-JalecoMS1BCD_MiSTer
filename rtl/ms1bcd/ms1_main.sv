@@ -122,7 +122,10 @@ module ms1_main (
 
 	output reg  [31:0]  dbg_irq2, dbg_int1e,
 	output reg  [31:0]  dbg_romwait, dbg_romacc,
-	output reg  [31:0]  dbg_mcuacc, dbg_mcubank
+	output reg  [31:0]  dbg_mcuacc, dbg_mcubank,
+	output      [15:0]  dbg_mcu_pc,
+	output              dbg_mcu_halt, dbg_mcu_if,
+	output      [10:0]  dbg_mcu_irqp, dbg_mcu_mask
 );
 	// ------------------------------------------------------- 68000 clocking
 	// enPhi1/enPhi2 must strictly alternate; fx68k wedges mid-cycle otherwise.
@@ -628,7 +631,9 @@ module ms1_main (
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_mcu_rdata),
 		.ss_freeze(ss_freeze), .ss_frozen(ss_mcu_frozen),
-		.dbg_addr(), .dbg_bank(mcu_dbg_bank), .dbg_rd(mcu_dbg_rd), .dbg_wr(), .dbg_din()
+		.dbg_addr(), .dbg_bank(mcu_dbg_bank), .dbg_rd(mcu_dbg_rd), .dbg_wr(), .dbg_din(),
+		.dbg_mcu_pc(dbg_mcu_pc), .dbg_mcu_halt(dbg_mcu_halt), .dbg_mcu_if(dbg_mcu_if),
+		.dbg_mcu_irqp(dbg_mcu_irqp), .dbg_mcu_mask(dbg_mcu_mask)
 	);
 
 	always @(posedge clk) begin

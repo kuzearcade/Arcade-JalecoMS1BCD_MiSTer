@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
 			        top->dbg_active, top->dbg_t0c, top->dbg_t1c, top->dbg_t2c, top->dbg_t0x, top->dbg_t0y, top->dbg_vramw),
 			fprintf(stderr, "   ym=%u oki1=%u oki2=%u\n", top->dbg_ym_writes, top->dbg_oki1_writes, top->dbg_oki2_writes);
 		if (top->vblank_rise && getenv("MS1_REGS"))
-			fprintf(stderr, "   mcu: irq2=%u int1edges=%u\n", top->dbg_irq2, top->dbg_int1e), fprintf(stderr, "   mcuacc=%u bank!=0=%u\n", top->dbg_mcuacc, top->dbg_mcubank);
+			fprintf(stderr, "   mcu: irq2=%u int1edges=%u\n", top->dbg_irq2, top->dbg_int1e), fprintf(stderr, "   mcuacc=%u bank!=0=%u pc=%04X halt=%d if=%d irqp=%03X mask=%03X\n", top->dbg_mcuacc, top->dbg_mcubank, top->dbg_mcu_pc, top->dbg_mcu_halt, top->dbg_mcu_if, top->dbg_mcu_irqp, top->dbg_mcu_mask);
 		if (top->vblank_rise) {
 			if (px && getenv("MS1_PXCOUNT"))
 				fprintf(stderr, "frame %zu: %zu pixels collected (expect %d)\n",
