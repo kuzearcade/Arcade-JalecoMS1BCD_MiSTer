@@ -109,6 +109,13 @@ module ms1bcd_core #(
 	output      [15:0]  dbg_spr_late_swaps,
 	output reg  [31:0]  dbg_palnz, dbg_opaque0, dbg_opaque2
 );
+	// monkelf is the only shipped set with prot == 2 (edfbl is excluded), so
+	// the protection field doubles as its "this is the bootleg board" flag.
+	wire        is_monkelf   = (prot == 2'd2);
+	wire [8:0]  prom_addr_i;
+	assign      prom_addr    = is_monkelf ? {1'b0, prom_addr_i[8:1]} : prom_addr_i;
+	wire [7:0]  prom_data_i  = is_monkelf ? {4'd0, prom_data[7:4]}   : prom_data;
+
 	// The whole savestate window: park, stream, resume. Holding only during
 	// ss_active left the raster free to advance while the CPU ran its park
 	// monitor, and the monitor's exit is not cycle-identical between a save
@@ -350,7 +357,15 @@ module ms1bcd_core #(
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_spr_rdata(ss_spr_rdata),
 		.dbg_spr_pass_cycles(dbg_spr_pass_cycles), .dbg_spr_late_swaps(dbg_spr_late_swaps),
-		.prom_addr(prom_addr), .prom_data(prom_data),
+		// monkelf's priority PROM is in the bootleg's own nibble-packed
+		// format: MAME expands it at init with
+		//   for (i = 0x1fe; i >= 0; i -= 2)
+		//       ROM[i] = ROM[i+1] = (ROM[i/2] >> 4) & 0x0f;
+		// i.e. entry A comes from the HIGH nibble of raw byte A>>1, each raw
+		// byte serving two consecutive entries. Done here as an address and
+		// data remap rather than by rewriting the table, so no PROM data has
+		// to be carried in the .mra or the bitstream (PLAN 2.3). MS1-55.
+		.prom_addr(prom_addr_i), .prom_data(prom_data_i),
 		.pal_addr(pala), .pal_data(pald),
 		.rgb(rgb), .rgb_valid(rgb_valid)
 	);

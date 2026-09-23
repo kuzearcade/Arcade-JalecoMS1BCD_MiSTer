@@ -165,7 +165,9 @@ module ms1_main (
 	// table. The responder itself is further down, with the rest of the
 	// protection logic; these are up here because the savestate readback and
 	// the CPU read mux both need them. See that block for what the table is.
-	wire       use_iosim = (prot == 2'd1);
+	wire       use_iosim  = (prot == 2'd1);
+	// monkelf is the only shipped set with prot == 2 (edfbl is excluded).
+	wire       is_monkelf = (prot == 2'd2);
 	wire [7:0] io_c0 = is_c ? 8'h56 : 8'h51;
 	wire [7:0] io_c3 = is_c ? 8'h55 : 8'h54;
 	wire [7:0] io_c4 = is_c ? 8'h54 : 8'h55;
@@ -197,6 +199,19 @@ module ms1_main (
 	wire b_v2   = ~is_c & (a >= 24'h058000) & (a < 24'h05C000);
 	wire b_ram  = ~is_c & (a >= 24'h060000) & (a < 24'h080000);   // + mirror
 	wire b_prot = ~is_c & (a >= 24'h0E0000) & (a < 24'h0E0002);
+	// monkelf has no protection device: the bootleg reads the five input
+	// ports DIRECTLY, at their own addresses just above the port the
+	// protected boards use (MAME's megasys1B_monkelf_map). MS1-55.
+	//   0E0002 P1   0E0004 P2   0E0006 DSW1   0E0008 DSW2   0E000A SYSTEM
+	wire b_mkin = ~is_c & is_monkelf & (a >= 24'h0E0002) & (a < 24'h0E000C);
+	reg [7:0] mkin_q;
+	always @(*) case (a[3:1])
+		3'd1:    mkin_q = in_p1;
+		3'd2:    mkin_q = in_p2;
+		3'd3:    mkin_q = in_dsw1;
+		3'd4:    mkin_q = in_dsw2;
+		default: mkin_q = in_system;      // 3'd5
+	endcase
 
 	// System C
 	wire c_rom0 = is_c & (a < 24'h080000);
@@ -578,8 +593,16 @@ module ms1_main (
 			case (vw_i)
 				9'h000: sh_active <= vw_d;  9'h080: sh_sflag <= vw_d;
 				9'h180: sh_scrf   <= vw_d;
-				9'h100: sh_t0x <= vw_d;     9'h101: sh_t0y <= vw_d;
-				9'h102: sh_t0c <= vw_d;     9'h104: sh_t1x <= vw_d;
+				// monkelf adjusts both X scrolls on the way in. MAME:
+				//   scroll0: data -= ((data & 0x0f) > 0x0d) ? 0x10 : 0
+				//   scroll1: data -= ((data & 0x0f) > 0x0b) ? 0x10 : 0
+				// with the comment "code in routine $280 does this.
+				// protection?" -- the bootleg's own fixup for whatever the
+				// removed device used to do. MS1-55.
+				9'h100: sh_t0x <= vw_d - ((is_monkelf && vw_d[3:0] > 4'hD) ? 16'h10 : 16'h0);
+				9'h101: sh_t0y <= vw_d;
+				9'h102: sh_t0c <= vw_d;
+				9'h104: sh_t1x <= vw_d - ((is_monkelf && vw_d[3:0] > 4'hB) ? 16'h10 : 16'h0);
 				9'h105: sh_t1y <= vw_d;     9'h106: sh_t1c <= vw_d;
 				9'h004: sh_t2x <= vw_d;     9'h005: sh_t2y <= vw_d;
 				9'h006: sh_t2c <= vw_d;
@@ -619,6 +642,7 @@ module ms1_main (
 		else if (sel_v1)   rdat = vr1_q;
 		else if (sel_v2)   rdat = vr2_q;
 		else if (sel_vreg) rdat = vreg_q;
+		else if (b_mkin)   rdat = {8'hFF, mkin_q};   // MS1-55, high byte undeclared
 		else if (sel_prot) rdat = {8'h00, prot_rd};
 		else               rdat = 16'h0000;
 	end

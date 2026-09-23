@@ -61,6 +61,7 @@
     <part crc="13be9979" name="1"/>
     <!-- oki2 0x040000 @ 0x2A4000 -->
     <part crc="05bc04d9" name="2"/>
+    <patch offset="0x744">4E 71</patch>
   </rom>
 
   <!-- Priority PROM (512 B). Its own index so it reaches a write

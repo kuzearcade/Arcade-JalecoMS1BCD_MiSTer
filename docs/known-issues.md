@@ -63,7 +63,7 @@ board, and MS1-32 / MS1-33 from M3.
 | MS1-52 | The MCU's IRF register never cleared an interrupt request | closed — MAME clears the named source; ours was a documented no-op |
 | MS1-53 | The core ran before the .mra's <switches> arrived, with `mode` at its idle 3 | closed — reset now waits for index 254, not for a fixed tail |
 | MS1-54 | The .mra's protection field reaches nothing: the core always runs the real MCU | closed for iosim — hayaosi1 and chimeraba boot; monkelf is MS1-55 |
-| MS1-55 | monkelf needs direct input ports, a ROM patch and a PROM rebuild, not a protection model | **OPEN** — the bootleg has no protection device at all |
+| MS1-55 | monkelf needs direct input ports, a ROM patch and a PROM rebuild, not a protection model | closed — all four pieces; boots on hardware |
 
 ---
 
@@ -1974,3 +1974,81 @@ So it needs, in order of where the work lands:
 `prot == 2` currently reads the port back as 0, which is what MAME's iosim
 state does with no command table installed, and is enough to keep the core
 well-defined -- but it is not enough to run the game.
+
+
+## MS1-55 addendum — all four pieces, and where each one lives
+
+`prot == 2` identifies monkelf uniquely among shipped sets (`edfbl`, the other
+`none`, is excluded), so it keys every fixup and no new `.mra` field is needed.
+
+**1. Direct input ports** (`ms1_main.sv`). The bootleg has no protection
+device and reads the five ports at their own addresses, just above the one the
+protected boards use:
+
+```
+0E0002 P1   0E0004 P2   0E0006 DSW1   0E0008 DSW2   0E000A SYSTEM
+```
+
+A sixth decode case, returning `{8'hFF, port}` -- the high byte reads as ones,
+as MAME's undeclared port bits do. DTACK needs nothing special: the core
+acknowledges any cycle that is not stalled on ROM or an array.
+
+**2. The ROM patch** (`.mra`). MAME's `init_monkelf` does
+`m_rom_maincpu[0x00744/2] = 0x4e71`, and the word really there is
+
+```
+0744:  4E 72 27 00      STOP #$2700
+```
+
+a halt with every interrupt masked -- the "port-based trap" MAME's comment
+guesses at. `4E71` is NOP. This is a program-ROM change, so it belongs in the
+`.mra`, not the core: `<patch offset="0x744">4E 71</patch>`, which is the
+form 39 files of the stock MiSTer arcade collection already use.
+
+**3. The priority PROM** (`ms1bcd_core.sv`). The bootleg's table is
+nibble-packed, and MAME expands it at init:
+
+```c
+for (int i = 0x1fe; i >= 0; i -= 2)
+    ROM[i + 0] = ROM[i + 1] = (ROM[i / 2] >> 4) & 0x0f;
+```
+
+so entry A comes from the HIGH nibble of raw byte A>>1, each raw byte serving
+two consecutive entries. Done as an **address and data remap** on the core's
+PROM port rather than by rewriting the table, which keeps PROM data out of
+both the `.mra` and the bitstream (PLAN 2.3).
+
+**4. The scroll fixups** (`ms1_main.sv`). Both X scrolls are adjusted on the
+way in, per `monkelf_scroll0_w` / `monkelf_scroll1_w`:
+
+```
+layer 0:  data -= ((data & 0x0f) > 0x0d) ? 0x10 : 0
+layer 1:  data -= ((data & 0x0f) > 0x0b) ? 0x10 : 0
+```
+
+MAME's comment is "code in routine $280 does this. protection?" -- the
+bootleg's own compensation for whatever the removed device used to do.
+
+### Verified
+
+Reference sim, 80 frames: `act=000F`, `vramw` 33,607, layer 0 scrolling
+frame to frame, and `irq2 = 0` -- correct, since there is no protection device
+to raise it. avspirit's 70-frame comparison is byte-identical before and after.
+
+On hardware, all three protection paths and both MCU sets in one sweep:
+
+| set | protection | screenshot sizes |
+|---|---|---|
+| monkelf | none | 4599 1582 16350 |
+| hayaosi1 | iosim | 21917 18971 19079 |
+| chimeraba | iosim | 18235 21449 23488 |
+| avspirit | mcu | 4599 2116 12349 |
+| edf | mcu | 8183 12781 12107 |
+
+monkelf draws the Avenging Spirit attract story sequence with its character
+portraits and correct layer ordering, which is the visible check on the PROM
+remap: a wrong priority table scrambles which layer wins, and it does not.
+
+**Not verified:** the scroll fixups against MAME frame by frame. The picture
+is positioned correctly by eye, but the thresholds (0x0d / 0x0b) have not been
+exercised against a reference capture.

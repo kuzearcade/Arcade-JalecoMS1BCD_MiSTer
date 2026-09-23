@@ -254,6 +254,25 @@ PROT_ID = {'mcu': 0x00, 'iosim': 0x20, 'none': 0x40, 'peekaboo': 0x60}
 
 from ms1_dipdata import DIPDATA
 
+# Per-set ROM patches, as MAME applies them in its init_ functions. Offsets
+# are BYTES into the index-0 stream, which starts with maincpu at 0.
+#
+# monkelf: MAME's init_monkelf does
+#     m_rom_maincpu[0x00744/2] = 0x4e71;  // weird check, 0xe000e R is a
+#                                         // port-based trap?
+# and the word there really is 4E72 2700 -- STOP #$2700, a halt with every
+# interrupt masked. The bootleg's program reaches it when a check fails;
+# NOP steps past. MS1-55.
+PATCHES = {
+    'monkelf': [(0x000744, '4E 71')],
+}
+
+def patches_xml(setname):
+    out = []
+    for off, data in PATCHES.get(setname, []):
+        out.append(f'    <patch offset="0x{off:X}">{data}</patch>\n')
+    return ''.join(out)
+
 # MAME spells coinage out ("1 Coin/2 Credits"); the OSD is narrow, and the
 # sibling NMK16 .mra files use the compact form, so display it that way. Only
 # the LABEL changes -- bit positions and order come from MAME.
@@ -320,7 +339,7 @@ def mra(setname):
   <buttons names="Button 1,Button 2,Button 3,Start,Coin" default="Y,B,A,Start,R"/>
 
   <rom index="0" zip="{mra_zip_attr(setname)}" md5="none">
-{parts_xml(setname)}  </rom>
+{parts_xml(setname)}{patches_xml(setname)}  </rom>
 {prom_xml(setname)}</misterromdescription>
 """
 
