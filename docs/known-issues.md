@@ -2870,18 +2870,140 @@ end
 `okidiv` is deliberately left frozen: the OKI replay does not depend on it,
 and holding it only delays the sample clock by the width of the load.
 
-### Still open
+### This was not the whole bug
 
-The shadow in that save had **1 of 256 registers non-zero** (`ymsh[0] = 0xFC`).
-That is not explained by either defect above -- both are on the restore side,
-and the shadow is captured on the write side -- so either the save was taken
-before 64th Street's sound CPU had programmed the chip, or the capture path
-has its own defect. `chip_a0` and `chip_din` are registered on `acc_edge`,
-while `ym_wr_pulse` that consumes them is combinational on the same edge, so
-the shadow decides select-vs-data from the *previous* bus write. For strict
-select/data pairs that still lands the right byte in the right register, one
-write late, but it has not been measured. Tracked separately.
+Fixing both of these was **not** enough: the board still lost all sound on a
+restore. The shadow in that save had 1 of 256 registers non-zero
+(`ymsh[0] = 0xFC`), which is the separate and larger defect written up as
+**MS1-62**. MS1-61 made the replay run; MS1-62 gave it something true to
+replay. Both are needed.
 
+
+## MS1-62 — the YM2151 register shadow only ever held one byte (fixed)
+
+MS1-61 made the register replay run again, and 64th Street still lost all
+sound on a restore. It was never only an FM problem: the sound driver has no
+other timebase than the YM2151's timer, so wrecking the YM stops the ADPCM
+too, which is why the report said **all** sound and not "the music".
+
+### The shadow was writing every register to index 0
+
+`rtl/ms1bcd/ms1_sound.sv` shadows every YM write so a load can replay it:
+
+```systemverilog
+wire ym_wr_pulse = acc_edge & ~eRWn & sel_ym;
+...
+else if (ym_wr_pulse) begin
+    if (!chip_a0) ym_reg_sel <= chip_din;        // register select
+    else          ymsh[ym_reg_sel] <= chip_din;  // data
+end
+```
+
+`chip_a0` and `chip_din` are registered on `acc_edge & ~eRWn` -- **with no
+`sel_ym` in the condition**. They are a "last write anywhere on the bus"
+latch, they exist to hold the value steady for the chip, and the shadow reads
+them one write late. That is survivable for a strict select/data pair. The
+driver does not write strict pairs: its YM access is a subroutine, so a `JSR`
+pushes a return address in between.
+
+From `MS1_BUSLOG` on the real 64th Street sound ROM, the first thing it does:
+
+```
+6 080000 W 0014   <- select register 0x14 (timer control)
+6 0EFFF8 W 0000   <- JSR pushes...
+6 0EFFFA W 18FC   <- ...the return address
+6 080002 W 0014   <- data
+```
+
+At the data write, `chip_a0` held `a[1]` of `0x0EFFFA`, which is **1**, and
+`chip_din` held `0xFC`, the low byte of the pushed address. So the data write
+took the `else` branch as expected -- but so did the *select* write, for the
+same reason, and `ym_reg_sel` never moved off 0.
+
+**Every YM write in the game landed in `ymsh[0]`.** The shadow's whole content
+was one byte:
+
+```
+  ss: ym_reg_sel = 00
+  ss: ymsh[00] = FC
+  ss: image 33056 words, 29 non-zero; YM shadow 1/256 non-zero
+```
+
+`ymsh[0] = 0xFC` is byte-for-byte what the user's `64STREETTEST_1.ss` carries.
+The simulation and the board agree exactly.
+
+### Why that silences everything
+
+The replay writes all 256 shadow bytes into jt51. With the shadow empty that
+is **255 zeros written over the chip's live registers**, including register
+`0x14`, the timer control -- clearing LOAD A/B and the IRQ enables. The
+driver polls the YM status register for a timer flag that can now never set:
+
+```
+hottest bus addresses over 6 frames after the restore (R = read):
+  080002 R 20755      <- YM status
+  0004AA R 20755      <- ...and the poll loop around it
+  0004AC R 20755
+  ...
+```
+
+20,755 reads of two addresses in six frames, and `ym=+0 oki1=+0 oki2=+0` from
+the restore onward. The sound CPU is alive and parked in a spin loop, which is
+why nothing else about the core looks wrong.
+
+### The fix
+
+Sample the live bus at the pulse instead of the shared latch:
+
+```systemverilog
+else if (ym_wr_pulse) begin
+    if (!a[1]) ym_reg_sel     <= oEdb[7:0];
+    else       ymsh[ym_reg_sel] <= oEdb[7:0];
+end
+```
+
+`a` and `oEdb` are the address and data of the write that *is* the pulse, so
+neither the one-write lag nor the cross-talk from non-YM writes can reach the
+shadow. Measured in `sim/rtl/ms1_snd`, save and restore at frame 60:
+
+```
+                     before          after
+  ym_reg_sel         00              14      (the driver's last select)
+  writes over the 29 frames after the restore:
+  ym                 +0              +706    (~24/frame, its rate before the save)
+  ymirq over 90 frames   44             397
+```
+
+`ymsh` feeds nothing but the replay, so this cannot move the live audio path
+and the gate-3/gate-4 measurements in `docs/m2-gate34.md` stand unchanged.
+
+### Saves written before this are not recoverable
+
+Their shadow never held the registers, so there is nothing to restore from.
+A state saved with an older bitstream will still lose sound on load; a state
+saved after it will not.
+
+### Still open: the same latch can reach the chip
+
+`ym_wr` is held until one `ym_cen_p1` has sampled it -- up to about 27 clocks,
+roughly one 68000 bus cycle -- and `chip_a0`/`chip_din` can be overwritten by
+an intervening non-YM write inside that window, which would send jt51 the
+wrong byte. It does not appear to be happening: the pushes come about three
+bus cycles after the chip write, and gate 3 matches MAME on 2398 of 2400
+frames. Giving the YM its own held pair would close it, and would need the
+gate re-run to confirm nothing moved. Not done.
+
+### How this hid
+
+`sim/rtl/ms1_frames` cannot see it. 64th Street's sound CPU makes **zero**
+chip writes in that harness at frame 200 -- before any savestate -- so its
+"sound CPU stopped writing the YM" annotation fired on a subsystem that was
+never started. The answer came from `sim/rtl/ms1_snd`, which drives the sound
+subsystem from MAME's own latch log, reaches the driver's steady state in
+seconds, and now runs the savestate sequence itself (`MS1_SS_AT=<frame>`,
+with `MS1_TRACE_FROM` to put the hot-address histogram after the restore).
+A sound bug needs the sound harness; the pixel harness was never going to
+answer it.
 
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 

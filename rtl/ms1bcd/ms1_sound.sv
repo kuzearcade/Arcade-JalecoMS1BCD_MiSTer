@@ -328,9 +328,23 @@ module ms1_sound (
 	always @(posedge clk) begin
 		if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd4)) ym_reg_sel <= ss_wdata[7:0];
 		if (ss_w & ss_ymsh) ymsh[ss_addr[7:0]] <= ss_wdata[7:0];
+		// MS1-62: the LIVE bus, not chip_a0/chip_din. Those two are a
+		// "last write on the bus" latch -- `acc_edge & ~eRWn` with no sel_ym
+		// -- updated on EVERY write and read here one write late. The sound
+		// driver's YM access is a subroutine, so between the register-select
+		// write and the data write it pushes a return address:
+		//
+		//   080000 W 0014   <- select register 0x14
+		//   0EFFF8 W 0000   <- JSR pushes...
+		//   0EFFFA W 18FC   <- ...the return address
+		//   080002 W 0014   <- data
+		//
+		// so at the data write chip_a0 held a[1] of 0x0EFFFA (1) and chip_din
+		// held 0xFC. Every write took the `else` branch, ym_reg_sel never
+		// moved off 0, and the whole shadow was the single byte ymsh[0]=FC.
 		else if (ym_wr_pulse) begin
-			if (!chip_a0) ym_reg_sel <= chip_din;
-			else          ymsh[ym_reg_sel] <= chip_din;
+			if (!a[1]) ym_reg_sel     <= oEdb[7:0];
+			else       ymsh[ym_reg_sel] <= oEdb[7:0];
 		end
 	end
 

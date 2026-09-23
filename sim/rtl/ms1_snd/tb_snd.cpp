@@ -94,6 +94,8 @@ int main(int argc, char **argv) {
 	// number of frames while looking otherwise healthy: the latch replay, the
 	// sreset trace and every clock-enable count are exactly right.
 	top->rom_ready = 1; top->oki1_stall = 0; top->oki2_stall = 0;
+	top->ss_active = 0; top->ss_addr = 0; top->ss_wr = 0; top->ss_wdata = 0;
+	top->ss_freeze = 0; top->ss_resume = 0; top->ss_replay = 0; top->ss_hold = 0;
 
 	auto serve = [&]() {
 		unsigned ra = top->rom_addr * 2;
@@ -128,6 +130,10 @@ int main(int argc, char **argv) {
 	// MS1_TRACE=<n>: histogram of the addresses the sound CPU touches over the
 	// first <n> frames, so a spin loop shows up as a handful of hot addresses.
 	long trace_frames = getenv("MS1_TRACE") ? atol(getenv("MS1_TRACE")) : 0;
+	// MS1_TRACE_FROM moves the histogram window, so it can sit AFTER a
+	// restore: a sound CPU stuck in a poll loop shows as one or two hot
+	// addresses where a running one shows dozens.
+	long trace_from = getenv("MS1_TRACE_FROM") ? atol(getenv("MS1_TRACE_FROM")) : 0;
 	std::vector<std::pair<unsigned, unsigned>> hot;   // addr -> count (small map)
 	FILE *tf = nullptr; long tf_left = 0;
 	if (const char *t = getenv("MS1_BUSLOG")) {
@@ -135,6 +141,89 @@ int main(int argc, char **argv) {
 		tf_left = getenv("MS1_BUSN") ? atol(getenv("MS1_BUSN")) : 20000;
 	}
 
+	// ---------------------------------------------------------- savestate
+	// MS1_SS_AT=<frame>: at the end of that frame, run the same sequence
+	// rtl/savestate/savestate.sv runs -- park, stream the sound module's
+	// regions out, stream them back in, replay, release -- and then keep
+	// going. The question this answers is the one the pixel harness cannot
+	// reach cheaply: does the sound CPU still drive the chips afterwards?
+	//
+	// ms1_sound decodes four regions of the flat image. The park module
+	// aliases 0x1D030-3F onto its four SSP/USP words, exactly as the engine's
+	// full sweep does, so the aliases are swept here too.
+	struct Rgn { unsigned lo, hi; };
+	static const Rgn RGN[] = {
+		{0x10000, 0x17FFF},   // sound work RAM, 32768 words
+		{0x1D020, 0x1D02F},   // scalars: latches, irq, chip_din/a0, dividers
+		{0x1D030, 0x1D03F},   // ss_m68k_park: SSP/USP
+		{0x1E000, 0x1E0FF},   // the YM2151 register shadow
+	};
+	const long ss_at = getenv("MS1_SS_AT") ? atol(getenv("MS1_SS_AT")) : -1;
+	std::vector<std::pair<unsigned,uint16_t>> img;
+
+	auto ss_hold = [&]() {
+		top->ss_hold = top->ss_freeze | top->ss_active | top->ss_resume;
+	};
+	auto do_savestate = [&]() {
+		unsigned ym0 = top->dbg_ym_writes, o10 = top->dbg_oki1_writes,
+		         o20 = top->dbg_oki2_writes;
+		top->ss_freeze = 1; ss_hold();
+		long g = 0; while (!top->ss_parked && g++ < 20000000) tick();
+		printf("  ss: parked=%d after %ld ticks\n", top->ss_parked, g);
+
+		img.clear();
+		top->ss_active = 1; ss_hold();
+		for (const auto &r : RGN)
+			for (unsigned a = r.lo; a <= r.hi; a++) {
+				top->ss_addr = a; tick(); tick(); tick();
+				img.push_back({a, (uint16_t)top->ss_rdata});
+			}
+		top->ss_active = 0; ss_hold();
+
+		unsigned nz = 0, ymnz = 0;
+		for (auto &w : img) {
+			if (w.second) nz++;
+			if (w.first >= 0x1E000 && w.first <= 0x1E0FF && (w.second & 0xFF)) ymnz++;
+		}
+		printf("  ss: image %zu words, %u non-zero; YM shadow %u/256 non-zero\n",
+		       img.size(), nz, ymnz);
+		for (auto &w : img) {
+			if (w.first == 0x1D024)
+				printf("  ss: ym_reg_sel = %02X\n", w.second & 0xFF);
+			if (w.first >= 0x1E000 && w.first <= 0x1E0FF && (w.second & 0xFF))
+				printf("  ss: ymsh[%02X] = %02X\n", w.first & 0xFF, w.second & 0xFF);
+		}
+		for (auto &w : img)
+			if (w.first == 0x1D025)
+				printf("  ss: scalar5 = %04X -> okidiv %2u ymdiv %u chip_a0 %u\n",
+				       w.second, w.second & 0x1F, (w.second >> 5) & 3, (w.second >> 7) & 1);
+
+		top->ss_active = 1; ss_hold();
+		for (auto &w : img) {
+			top->ss_addr = w.first; top->ss_wdata = w.second; top->ss_wr = 1;
+			tick(); top->ss_wr = 0; tick();
+		}
+		top->ss_active = 0; ss_hold();
+
+		top->ss_replay = 1; ss_hold();
+		g = 0; while (!top->ss_replay_done && g++ < 5000000) tick();
+		printf("  ss: replay %s after %ld ticks\n",
+		       top->ss_replay_done ? "done" : "TIMED OUT", g);
+		top->ss_replay = 0; ss_hold();
+
+		top->ss_resume = 1; ss_hold();
+		g = 0; while (top->ss_parked && g++ < 20000000) tick();
+		printf("  ss: unparked=%d after %ld ticks\n", !top->ss_parked, g);
+		top->ss_freeze = 0; ss_hold();
+		for (int i = 0; i < 256; i++) tick();
+		top->ss_resume = 0; ss_hold();
+
+		printf("  ss: writes DURING the save window: ym=%u oki1=%u oki2=%u\n",
+		       top->dbg_ym_writes - ym0, top->dbg_oki1_writes - o10,
+		       top->dbg_oki2_writes - o20);
+	};
+
+	unsigned ss_ym = 0, ss_o1 = 0, ss_o2 = 0;
 	size_t li = 0, si = 0;
 	long acc = 0;
 	for (long f = 0; f < frames; f++) {
@@ -153,7 +242,7 @@ int main(int argc, char **argv) {
 				fprintf(tf, "%ld %06X %c %04X\n", f, top->dbg_addr, top->dbg_rw ? 'R' : 'W', top->dbg_rw ? top->dbg_rdata : top->dbg_wdata);
 				if (--tf_left <= 0) { fclose(tf); tf = nullptr; }
 			}
-			if (f < trace_frames && top->dbg_acc) {
+			if (f >= trace_from && f < trace_from + trace_frames && top->dbg_acc) {
 				unsigned ad = top->dbg_addr | (top->dbg_rw ? 0x1000000u : 0u);
 				bool found = false;
 				for (auto &h : hot) if (h.first == ad) { h.second++; found = true; break; }
@@ -180,7 +269,20 @@ int main(int argc, char **argv) {
 		}
 		if (cnt) fprintf(cnt, "%ld ym=%u oki1=%u oki2=%u\n", f,
 		                 top->dbg_ym_writes, top->dbg_oki1_writes, top->dbg_oki2_writes);
+		if (f == ss_at) {
+			printf("savestate at end of frame %ld  (ym=%u oki1=%u oki2=%u so far)\n",
+			       f, top->dbg_ym_writes, top->dbg_oki1_writes, top->dbg_oki2_writes);
+			fflush(stdout);
+			do_savestate();
+			ss_ym = top->dbg_ym_writes; ss_o1 = top->dbg_oki1_writes;
+			ss_o2 = top->dbg_oki2_writes;
+			fflush(stdout);
+		}
 	}
+	if (ss_at >= 0)
+		printf("AFTER the restore, over %ld frames: ym=+%u oki1=+%u oki2=+%u\n",
+		       frames - 1 - ss_at, top->dbg_ym_writes - ss_ym,
+		       top->dbg_oki1_writes - ss_o1, top->dbg_oki2_writes - ss_o2);
 	printf("after %ld frames: ym=%u oki1=%u oki2=%u  ymirq=%u iack=%u\n", frames,
 	       top->dbg_ym_writes, top->dbg_oki1_writes, top->dbg_oki2_writes,
 	       top->dbg_ymirq, top->dbg_iack);
@@ -190,7 +292,8 @@ int main(int argc, char **argv) {
 	if (trace_frames) {
 		std::sort(hot.begin(), hot.end(),
 		          [](auto &a, auto &b) { return a.second > b.second; });
-		printf("hottest bus addresses over %ld frames (R = read):\n", trace_frames);
+		printf("hottest bus addresses over %ld frames from frame %ld (R = read):\n",
+		       trace_frames, trace_from);
 		for (size_t i = 0; i < hot.size() && i < 24; i++)
 			printf("  %06X %s %u\n", hot[i].first & 0xFFFFFF,
 			       (hot[i].first & 0x1000000) ? "R" : "W", hot[i].second);
