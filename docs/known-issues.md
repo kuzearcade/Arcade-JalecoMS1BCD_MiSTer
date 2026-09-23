@@ -2346,7 +2346,7 @@ RTLSRC := $(wildcard $(RTL)/*.sv $(RTL)/*.v $(RTL)/ms1bcd/*.sv $(RTL)/ms1bcd/*.v
 Over-broad on purpose: a needless rebuild costs 40 seconds and a skipped one
 costs a wrong measurement.
 
-## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55
+## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 
 Every shipped set whose board this core implements now boots on the
 DE10-Nano at 192.168.1.138 and draws its attract mode. Three screenshots per
@@ -2385,13 +2385,38 @@ which is right -- the core outputs the board's native ROT90 raster and the
 rotation happens in the framebuffer downstream), and bigstrik on the Jaleco
 copyright screen, which is why two of its three samples are nearly black.
 
-**System D, not yet on the board.** `peekaboo` runs in simulation as of
-MS1-56 and is **pixel-exact against MAME on both paths** -- the reference sim
-and the SDRAM path agree with each other and with the oracle on every steady
-frame -- but it has not been loaded on the DE10-Nano, so this table has no
-row for it yet. MS1-40 (the 2 MHz sample clock), MS1-42 (the 16-bit SYSTEM
-port and the paddles), MS1-57 (the lookahead wrap) and MS1-58 (the sim
-Makefiles' dependencies) all closed with it.
+**System D, 2 of 2**
+
+| set | protection | screenshots |
+|---|---|---|
+| peekaboo | peekaboo | 56308 57344 |
+| peekaboou | peekaboo | 56308 57344 |
+
+Both boot and animate. The attract cycles: the block-breaker playfield with
+"INSERT COIN", the paddle, the score panel (HIGH SCORE / 1UP / 2UP / ADV.
+BONUS), then the RANKING screen with six entries over its star background.
+The two sets are the same game and draw the same attract, which is why their
+counts match.
+
+`peekaboo` is also **pixel-exact against MAME on both simulation paths** --
+the reference sim and the SDRAM path agree with each other and with the
+oracle on every steady frame (MS1-56). MS1-40 (the 2 MHz sample clock),
+MS1-42 (the 16-bit SYSTEM port and the paddles), MS1-57 (the lookahead wrap)
+and MS1-58 (the sim Makefiles' dependencies) all closed with it.
+
+**All 16 shipped sets now boot on the board.**
+
+### Regression check on the MS1-57 build
+
+MS1-57 changes what every layer fetches in the first eight columns of every
+line, on every board, so the B and C tables above were re-checked on the new
+bitstream rather than assumed. Five sets across both modes and all three
+protection models -- `avspirit` (mcu), `hayaosi1` (iosim), `monkelf` (none),
+`64street` (mcu, System C), `cybattlr` (mcu, System C) -- load and animate,
+and their attract screens are the ones they were showing before: avspirit's
+city with the girder tower, monkelf's GAME OVER over the same scene,
+hayaosi1's quiz panel with its Japanese question text, 64th Street's Allen
+dialogue portrait, and Cybattler's rotated specification screen.
 
 ### What this does and does not establish
 

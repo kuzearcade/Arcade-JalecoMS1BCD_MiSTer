@@ -175,6 +175,11 @@ only appears under `quartus_sh --flow compile`. Running `quartus_map` alone
 fails with `can't open Verilog Design File "build_id.v"` until one full flow
 has run.
 
-The bitstream is at `releases/Arcade-JalecoMS1BCD_20260922.rbf`. It has never
-been loaded. The remaining M4 gates — boots to attract, native screenshots,
-audio correlation, the input sweep, all 17 `.mra` — all need the board.
+The bitstream is at `releases/Arcade-JalecoMS1BCD_20260923.rbf`: 66 % of the
+ALMs, 537 of 553 M10K, **0 timing violations**, and it is the build that
+carries System D (MS1-56) and the lookahead fix (MS1-57).
+
+**All 16 shipped sets boot on the board** — System B 7 of 7, System C 7 of 7,
+System D 2 of 2. The remaining M4 gates are audio correlation, the input
+sweep and savestates on hardware, all of which need the board and none of
+which is a bring-up problem.
