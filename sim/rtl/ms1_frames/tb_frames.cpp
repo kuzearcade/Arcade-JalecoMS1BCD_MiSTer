@@ -14,6 +14,7 @@
 #include "Vms1bcd_core.h"
 #include "verilated.h"
 #include "Vms1bcd_core___024root.h"
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -189,6 +190,16 @@ int main(int argc, char **argv) {
 		std::vector<uint16_t> img(SS_WORDS, 0);
 
 		auto park = [&]() {
+			// PARK ON A VBLANK EDGE, the way rtl/savestate/savestate.sv does
+			// (S_ARM waits for `vblank & ~vb_d` before raising ss_freeze).
+			// Raising it at an arbitrary tick instead lands the held clock
+			// dividers on a different phase, and this harness then cannot see
+			// a restore bug that depends on that phase -- which is exactly how
+			// MS1-61 hid here while failing on the board.
+			if (!getenv("MS1_SS_PARK_ANY")) {
+				long gv = 0;
+				while (!top->vblank_rise && gv++ < 4000000) tick();
+			}
 			top->ss_freeze = 1;
             long g = 0;
 			while (!top->ss_frozen && g++ < 20000000) tick();
@@ -219,6 +230,27 @@ int main(int argc, char **argv) {
 				tick();
 			}
 			top->ss_active = 0;
+			// MS1-61: the sound scalar that carries ymdiv. The YM register
+			// replay is clocked by ym_cen_p1 = enPhi1 & (ymdiv == 3), and
+			// ymdiv is frozen by ss_hold for the whole of the replay, so the
+			// value restored here decides whether the replay can advance at
+			// all.
+			{
+				// MS1_SS_YMDIV=N forces the restored ymdiv, so the stall can
+				// be reproduced on demand instead of only when the park
+				// happens to land on a phase other than 3. The user's real
+				// 64street save carried ymdiv 0.
+				if (const char *yd = getenv("MS1_SS_YMDIV")) {
+					unsigned n = (unsigned)strtol(yd, nullptr, 0) & 3;
+					img[0x1D025] = (img[0x1D025] & ~0x60u) | (n << 5);
+					top->ss_addr = 0x1D025; top->ss_wdata = img[0x1D025];
+					top->ss_active = 1; top->ss_wr = 1; tick();
+					top->ss_wr = 0; tick(); top->ss_active = 0;
+				}
+				unsigned w = img[0x1D025];
+				printf("  sound scalar5 = %04X -> okidiv %2u ymdiv %u chip_a0 %u\n",
+				       w, w & 0x1F, (w >> 5) & 3, (w >> 7) & 1);
+			}
 			top->ss_replay = 1;
 			long g = 0;
 			while (!top->ss_replay_done && g++ < 5000000) tick();
@@ -578,16 +610,32 @@ int main(int argc, char **argv) {
 		printf("  image has %zu non-zero words of %zu\n", nz, SS_WORDS);
 		release();
 
+		// MS1-61: the sound side of the round trip. A restore that leaves the
+		// sound CPU wedged shows up as chip writes falling to zero AFTER the
+		// load while the picture may still be perfect, which is exactly the
+		// shape of "restoring a state drops all sound output from then on".
+		auto snd = [&]() {
+			return std::array<unsigned,3>{top->dbg_ym_writes,
+			                              top->dbg_oki1_writes,
+			                              top->dbg_oki2_writes};
+		};
+		auto sA0 = snd();
 		std::vector<std::vector<uint32_t>> A, B;
 		run_span(A);
-		printf("  span A: %zu frames\n", A.size());
+		auto sA1 = snd();
+		printf("  span A: %zu frames   ym +%u  oki1 +%u  oki2 +%u\n", A.size(),
+		       sA1[0]-sA0[0], sA1[1]-sA0[1], sA1[2]-sA0[2]);
 
 		printf("savestate: parking to restore...\n");
 		if (!park()) { printf("  FAIL: the core never parked for the load\n"); return 1; }
 		stream_in();
 		release();
+		auto sB0 = snd();
 		run_span(B);
-		printf("  span B: %zu frames\n", B.size());
+		auto sB1 = snd();
+		printf("  span B: %zu frames   ym +%u  oki1 +%u  oki2 +%u%s\n", B.size(),
+		       sB1[0]-sB0[0], sB1[1]-sB0[1], sB1[2]-sB0[2],
+		       (sB1[0]-sB0[0]) ? "" : "   <-- SOUND CPU STOPPED WRITING THE YM");
 
 		// docs/PLAN.md M3 asks for the round trip to be "pixel-exact AFTER
 		// frame 0": the frame in which the restore lands carries pipeline

@@ -2752,6 +2752,137 @@ given above: gameplay cannot be aligned against MAME frame for frame. What is
 established is that the budget is now met with 4.7 rows in hand where it was
 missed by 15.3, on both paths and on a System B, C and D set.
 
+## MS1-61 — restoring a state silences the YM2151 for good (fixed)
+
+Reported from the board: **on 64th Street, restoring a state drops all sound
+output from then on.** Not "the music restarts wrong" and not "one voice is
+missing" -- every FM voice, permanently, until the core is reloaded.
+
+### Two defects, one in the clock and one in the state machine
+
+`rtl/ms1bcd/ms1_sound.sv` does not save the YM2151's internal state. It keeps
+a 256-byte **shadow** of every register the sound CPU has written, and on a
+load it replays all 256 back into jt51 as select/data pairs, one write per
+`ym_cen_p1`. That is the usual savestate compromise: registers restore,
+envelope phase does not.
+
+`ym_cen_p1` is `enPhi1 & (ymdiv == 2'd3)`, and `ymdiv` was held by `ss_hold`:
+
+```systemverilog
+else if (ss_hold) ymdiv <= ymdiv;      // the defect
+else if (enPhi1)  ymdiv <= ymdiv + 2'd1;
+```
+
+`ss_hold` is `ss_freeze | ss_active | ss_resume` (`ms1bcd_core.sv:142`), and
+`rtl/savestate/savestate.sv` raises `ss_freeze` in `S_FREEZE` (:128) and does
+not drop it until `S_RELWAIT` (:246) -- so it is high for the whole of
+`S_REPLAY`. **`ymdiv` is therefore frozen at whatever value the image
+restored, for the entire replay.** Three of its four values make `ym_cen_p1`
+dead, and the replay cannot advance a single register:
+
+| restored `ymdiv` | `ym_cen_p1` during replay | replay |
+|---|---|---|
+| 0, 1, 2 | never fires | stalls forever |
+| 3 | fires on **every** `enPhi1` | finishes, at 4x the intended rate |
+
+The engine waits on `ss_replay_done`, times out, and then reports the load
+**OK** (`ok_r <= 1'b1`, savestate.sv:223) -- so nothing on screen says the
+sound state never arrived.
+
+That alone would lose the registers. What silences the chip is the second
+defect, in the replay FSM: `rp_run` had no clear except "all 256 done".
+
+```systemverilog
+if (!ss_replay) begin rp_done <= 1'b0; ss_replay_done <= 1'b0; end   // rp_run not cleared
+```
+
+`rp_run` drives jt51's `wr_n` and takes over its `a0` and `din` from the sound
+CPU:
+
+```systemverilog
+.wr_n(~(ym_wr | rp_run)), .a0(rp_run ? rp_phase : chip_a0),
+.din(rp_run ? (rp_phase ? ymsh_q : rp_idx) : chip_din),
+```
+
+So a replay that cannot advance latches `rp_run` high **for the rest of the
+session**. Every YM write the game makes afterwards is replaced by the stuck
+replay's data. That is the reported symptom exactly: not degraded sound, no
+sound, from the restore onward.
+
+### The user's own save
+
+`64STREETTEST_1.ss` (393,224 bytes) carries, at the sound scalar word
+`0x1D025`:
+
+```
+sound scalar5 0x1D025 = 0001 -> okidiv 1  ymdiv 0  chip_a0 0
+```
+
+`ymdiv 0` -- one of the three dead phases.
+
+### Why the simulator kept saying it was fine
+
+`sim/rtl/ms1_frames` parked by raising `ss_freeze` at an arbitrary tick, while
+the real engine's `S_ARM` waits for a `vblank & ~vb_d` edge first. The two
+land the held divider on different phases, and the harness happened to land on
+3 -- the one value that works. Three runs in a row reported `ymdiv 3` and
+"replay done after 3507 ticks", and on that evidence a correct diagnosis was
+retracted. **A phase-dependent bug is invisible to a harness that always
+parks on the same phase**, and 3507 ticks was itself the tell: 512 chip writes
+at one per `ym_cen_p1` cannot take fewer than about 14000.
+
+The harness now parks on the vblank edge, and takes `MS1_SS_YMDIV=N` to force
+the restored phase, which turns a race into a table:
+
+```
+                         before            after
+  forced ymdiv=0    TIMED OUT (5000001)   done after 14040 ticks
+  forced ymdiv=1    TIMED OUT (5000001)   done after 14033 ticks
+  forced ymdiv=2    TIMED OUT (5000001)   done after 14026 ticks
+  forced ymdiv=3    done after 3507       done after 14019 ticks
+```
+
+The last row matters as much as the first three: 3507 ticks was the replay
+writing jt51 on every `enPhi1` instead of every fourth, four times faster than
+the chip is clocked to accept. Even the phase that "worked" was not replaying
+the registers correctly.
+
+### The fix
+
+Two lines, both in `rtl/ms1bcd/ms1_sound.sv`. Let the divider run through the
+replay -- `enPhi1` is gated by `ss_active` alone, which savestate.sv has
+already dropped by then (:214), so the CPU stays parked either way:
+
+```systemverilog
+else if (ss_hold & ~ss_replay) ymdiv <= ymdiv;
+```
+
+and make the replay let go of the chip when `ss_replay` drops, finished or
+not, so a stall can never outlive the load:
+
+```systemverilog
+if (!ss_replay) begin
+    rp_run <= 1'b0; rp_idx <= 8'd0; rp_phase <= 1'b0;
+    rp_done <= 1'b0; ss_replay_done <= 1'b0;
+end
+```
+
+`okidiv` is deliberately left frozen: the OKI replay does not depend on it,
+and holding it only delays the sample clock by the width of the load.
+
+### Still open
+
+The shadow in that save had **1 of 256 registers non-zero** (`ymsh[0] = 0xFC`).
+That is not explained by either defect above -- both are on the restore side,
+and the shadow is captured on the write side -- so either the save was taken
+before 64th Street's sound CPU had programmed the chip, or the capture path
+has its own defect. `chip_a0` and `chip_din` are registered on `acc_edge`,
+while `ym_wr_pulse` that consumes them is combinational on the same edge, so
+the shadow decides select-vs-data from the *previous* bus write. For strict
+select/data pairs that still lands the right byte in the right register, one
+write late, but it has not been measured. Tracked separately.
+
+
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 
 Every shipped set whose board this core implements now boots on the

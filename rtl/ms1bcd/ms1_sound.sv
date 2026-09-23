@@ -152,10 +152,18 @@ module ms1_sound (
 	// it. Getting this wrong runs the chip's timers fast, and megasys1.cpp:673
 	// notes the YM2151 clock is what decides the music tempo -- so it lands
 	// straight on the gate (3) write counts.
+	// MS1-61: `ss_hold` is ss_freeze|ss_active|ss_resume, and ss_freeze stays
+	// up for the whole savestate window -- including the REPLAY phase that
+	// pushes the 256 shadowed YM registers back into jt51, one per ym_cen_p1.
+	// Freezing ymdiv there froze ym_cen_p1 too: the replay could only advance
+	// if the restored ymdiv happened to be 3, and stalled forever otherwise.
+	// `enPhi1` is gated by ss_active alone, which is already low by then, so
+	// letting ymdiv run through the replay costs at most three enPhi1 ticks of
+	// YM phase against the saved value and nothing else.
 	reg [1:0] ymdiv;
 	always @(posedge clk) if (reset) ymdiv <= 2'd0;
 		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd5)) ymdiv <= ss_wdata[6:5];
-		else if (ss_hold) ymdiv <= ymdiv;
+		else if (ss_hold & ~ss_replay) ymdiv <= ymdiv;
 		else if (enPhi1) ymdiv <= ymdiv + 2'd1;
 	wire ym_cen    = enPhi1 & (ymdiv[0] == 1'b1);
 	wire ym_cen_p1 = enPhi1 & (ymdiv    == 2'd3);
@@ -335,7 +343,18 @@ module ms1_sound (
 			rp_run <= 1'b0; rp_idx <= 8'd0; rp_phase <= 1'b0;
 			rp_done <= 1'b0; ss_replay_done <= 1'b0;
 		end else begin
-			if (!ss_replay) begin rp_done <= 1'b0; ss_replay_done <= 1'b0; end
+			// MS1-61, second half: rp_run had no clear but "all 256 done",
+			// so a replay that could not advance latched it high for good.
+			// rp_run drives jt51's wr_n and steals its a0/din from the sound
+			// CPU, so a stalled replay did not merely fail to restore the
+			// registers -- it silenced the chip permanently, which is the
+			// symptom that was reported. The savestate engine gives up on a
+			// timeout and reports OK, so the replay has to let go when
+			// ss_replay drops whether it finished or not.
+			if (!ss_replay) begin
+				rp_run <= 1'b0; rp_idx <= 8'd0; rp_phase <= 1'b0;
+				rp_done <= 1'b0; ss_replay_done <= 1'b0;
+			end
 			else if (!rp_run && !rp_done) begin
 				rp_run <= 1'b1; rp_idx <= 8'd0; rp_phase <= 1'b0;
 			end

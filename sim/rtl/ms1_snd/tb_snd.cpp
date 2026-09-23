@@ -69,6 +69,17 @@ int main(int argc, char **argv) {
 	Vms1_sound *top = new Vms1_sound;
 	top->mode = mode;
 	top->oki_status_real = getenv("MS1_OKI_STATUS_REAL") ? 1 : 0;
+	// MS1-40: the .mra's game-mode byte bit 4 halves the sample clock, for
+	// hayaosi1 and for all of System D. Without this the harness can only
+	// ever measure the 4 MHz path, which is not what those three sets run.
+	top->oki_2mhz = getenv("MS1_OKI2MHZ") ? 1 : 0;
+	// MS1-39: the OSD pause gates the sound 68000 (not the chips).
+	top->pause = 0;
+	// MS1-56: on System D the MAIN CPU owns OKI 1. This harness drives the
+	// sound CPU, which that board does not have, so these stay idle here and
+	// a System D audio check needs a different stimulus -- see
+	// docs/m2-gate34.md.
+	top->main_oki_we = 0; top->main_oki_wdata = 0; top->main_oki_bank = 0;
 	top->reset = 1; top->clk = 0; top->latch_we = 0; top->latch_data = 0;
 	top->sreset = 0;
 	// The HW_ROMS handshake, added to ms1_sound.sv with the SDRAM path (M3).
