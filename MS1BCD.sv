@@ -857,6 +857,45 @@ assign vblank_core = (vcount_core < 9'd16) | (vcount_core >= 9'd240);
 // synchronisers.
 wire clk_vid = clk_ram;
 
+// ------------------------------------------------------------------
+// THE CORE'S PIXEL LAGS ITS RASTER POSITION BY RGB_LAT PIXEL TICKS, and
+// video_retime is the only consumer that cares. ms1_video.sv carries the
+// pixel's validity through `vpipe` -- four stages, tilemap pen, priority,
+// palette+rgb -- and then registers `rgb_valid` once more, so `core_rgb` at
+// `hcount_core == H` is the pixel of column H-5, not H.
+//
+// video_retime writes buf_mem[hcount_w], so handing it the LIVE hcount puts
+// the whole picture five columns to the right and fills columns 0..4 with the
+// tail of the previous line -- a five-pixel strip down the left of every
+// game. MEASURED against MAME: the board's columns 5..255 matched MAME's
+// 0..250 with ZERO differing pixels, where the unshifted comparison differed
+// in 23192. MS1-59.
+//
+// The fix is to delay the POSITION rather than the pixel, so the pair handed
+// across is consistent. Delaying vcount too is what makes the line wrap come
+// out right: while the pipeline is still emitting line L's last five pixels,
+// hcount has already wrapped into line L+1, and the delayed vcount still
+// reads L, so those pixels land in line L's buffer where they belong.
+//
+// `vblank_core` deliberately keeps the LIVE vcount: it drives the autofire
+// frame tick and the savestate engine's "wait for vblank", neither of which
+// is part of the picture, and both of which have been measured on the live
+// one.
+localparam integer RGB_LAT = 5;
+reg [8:0] hc_lat [0:RGB_LAT-1];
+reg [8:0] vc_lat [0:RGB_LAT-1];
+integer rl;
+always @(posedge clk_sys) if (ce_pix_core) begin
+	hc_lat[0] <= hcount_core;
+	vc_lat[0] <= vcount_core;
+	for (rl = 1; rl < RGB_LAT; rl = rl + 1) begin
+		hc_lat[rl] <= hc_lat[rl-1];
+		vc_lat[rl] <= vc_lat[rl-1];
+	end
+end
+wire [8:0] hcount_vid = hc_lat[RGB_LAT-1];
+wire [8:0] vcount_vid = vc_lat[RGB_LAT-1];
+
 wire        rt_ce, rt_hs, rt_vs, rt_hb, rt_vb, rt_vb_hs;
 wire [23:0] rt_rgb;
 video_retime #(
@@ -865,7 +904,7 @@ video_retime #(
 	.LINE_CLKS(6144), .VTOTAL_P(278)
 ) video_retime (
 	.clk_w(clk_sys), .reset_w(reset), .ce_w(ce_pix_core),
-	.hcount_w({1'b0, hcount_core}), .vcount_w({1'b0, vcount_core}), .rgb_w(core_rgb),
+	.hcount_w({1'b0, hcount_vid}), .vcount_w({1'b0, vcount_vid}), .rgb_w(core_rgb),
 	.mode1(1'b0), .tall240(1'b0),
 	.clk_r(clk_vid),
 	.ce_r(rt_ce), .rgb_r(rt_rgb), .hs_r(rt_hs), .vs_r(rt_vs), .de_r(),

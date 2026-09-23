@@ -180,6 +180,8 @@ ALMs, 537 of 553 M10K, **0 timing violations**, and it is the build that
 carries System D (MS1-56) and the lookahead fix (MS1-57).
 
 **All 16 shipped sets boot on the board** — System B 7 of 7, System C 7 of 7,
-System D 2 of 2. The remaining M4 gates are audio correlation, the input
+System D 2 of 2 — and the picture is now bit-identical to MAME's: MS1-59 had
+the whole frame five columns to the right, with the previous line's tail in
+the gap, on every game. The remaining M4 gates are audio correlation, the input
 sweep and savestates on hardware, all of which need the board and none of
 which is a bring-up problem.

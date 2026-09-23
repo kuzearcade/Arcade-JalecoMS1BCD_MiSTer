@@ -67,6 +67,7 @@ board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57.
 | MS1-56 | System D has no memory map: `mode == 2` falls into System B's | closed — map, 2 layers, 555 palette, own protection, main-CPU OKI |
 | MS1-57 | The tile-fetch lookahead wrapped on the visible width, not the whole line | closed — every SDRAM-path line began with 8 pixels from column 128; the reference sim runs LOOKAHEAD 0 and could not see it |
 | MS1-58 | The sim Makefiles do not depend on the RTL verilator finds through `-y` | closed — `RTLSRC` wildcard; a fix in ms1_video.sv left the old binary in place and the next run re-measured the bug |
+| MS1-59 | Every game shows a five-pixel strip down the left of the screen | closed — the core's pixel lags its raster position by 5; measured 5 px -> 0 px against MAME on the board |
 
 ---
 
@@ -2345,6 +2346,120 @@ RTLSRC := $(wildcard $(RTL)/*.sv $(RTL)/*.v $(RTL)/ms1bcd/*.sv $(RTL)/ms1bcd/*.v
 
 Over-broad on purpose: a needless rebuild costs 40 seconds and a skipped one
 costs a wrong measurement.
+
+## MS1-59 — every game shows a five-pixel strip down the left of the screen (closed)
+
+Reported from the board, on every game. The picture is **shifted five columns
+to the right**; the five columns it vacates at the left are filled with the
+tail of the PREVIOUS line, and the five true columns pushed off the right are
+lost.
+
+### The measurement
+
+`peekaboo`'s RANKING screen is static for a long stretch of the attract, so
+the same scene can be captured on both sides. MAME was re-captured deep into
+the attract (`MS1_SKIP=2600 MS1_FRAMES=600`) to reach it, and the board's
+screenshot compared against every captured frame at each shift 0..8:
+
+```
+                                   best shift   diff
+peekaboo  RANKING (board)              5 px       0      next best 6 px: 7333
+peekaboou RANKING (board)              5 px       0      next best 6 px: 7333
+```
+
+**Zero differing pixels at a shift of five**, against 23192 unshifted. Not a
+correlation; the whole frame.
+
+### The cause
+
+`ms1_video.sv` carries a pixel's validity through `vpipe` -- four stages,
+tilemap pen, priority, palette+rgb -- and then registers `rgb_valid` once
+more. `visible` is combinational from `hcount`, so:
+
+> `core_rgb` at `hcount_core == H` is the pixel of column **H-5**.
+
+`video_retime.sv` writes `buf_mem[{vcount_w[0], w_x[8:0]}] <= rgb_w` with
+`w_x = hcount_w - w_x0`. The top level handed it the LIVE `hcount_core`, so
+every pixel was stored five slots to the right of where it belongs, and slots
+0..4 took whatever the pipeline was still emitting when `hcount` wrapped --
+the previous line's columns 251..255.
+
+### Why nothing caught it
+
+**No simulation in this project uses `hcount` to place a pixel.** Both frame
+harnesses do the same thing:
+
+```c
+if (top->ce_pix_o && top->rgb_valid && px < cur.size()) cur[px++] = top->rgb;
+```
+
+They append valid pixels in order, which is exactly the operation that a
+constant hcount-to-rgb offset cannot disturb. Every "pixel-exact against
+MAME" result in this project is therefore true and was blind to this by
+construction. `video_retime` is the only consumer that uses the raster
+position, it lives in the top level, and no simulation instantiates the top
+level.
+
+It is the same shape as MS1-57 one layer out: a defect that only exists in
+the configuration that ships, measured only in the configuration that does
+not.
+
+### The fix
+
+Delay the POSITION to meet the pixel, rather than the other way round, in
+`MS1BCD.sv`:
+
+```systemverilog
+localparam integer RGB_LAT = 5;
+reg [8:0] hc_lat [0:RGB_LAT-1];
+reg [8:0] vc_lat [0:RGB_LAT-1];
+always @(posedge clk_sys) if (ce_pix_core) begin
+	hc_lat[0] <= hcount_core; vc_lat[0] <= vcount_core;
+	for (rl = 1; rl < RGB_LAT; rl = rl + 1) begin
+		hc_lat[rl] <= hc_lat[rl-1]; vc_lat[rl] <= vc_lat[rl-1];
+	end
+end
+```
+
+Delaying `vcount` as well is what makes the line wrap come out right: while
+the pipeline is still emitting line L's last five pixels, `hcount` has already
+wrapped into line L+1, and the delayed `vcount` still reads L, so those pixels
+land in line L's buffer. The reader is ~246 pixels behind that write, so there
+is no race.
+
+`vblank_core` deliberately keeps the live `vcount`: it drives the autofire
+frame tick and the savestate engine's vblank wait, neither of which is part of
+the picture, and both of which were measured on the live one.
+
+### Verified on the board
+
+The same measurement, on the rebuilt bitstream:
+
+| | best shift | differing pixels |
+|---|---|---|
+| before | 5 px | 0 (unshifted 23192) |
+| **after** | **0 px** | **0** |
+
+The board's framebuffer is bit-identical to MAME's frame of the same scene.
+Checked on all three boards: `peekaboo` (D), `avspirit` (B) and `cybattlr`
+(C). Cybattler is the clearest read -- its own border line sat at column 5
+with four columns of stale black to its left, and now sits at column 0 with
+the grid running cleanly behind it:
+
+```
+cybattlr, column means 0..9
+  before   63  61  59  57  55 | 129  87  87  87  87
+  after   129  87  87  87  87 |  87  87  87  87  87
+```
+
+### The sibling cores use the same module the same way
+
+`Arcade-SandScrp_MiSTer` and `Arcade-NMK16_MiSTer` both pass a live
+`hcount_core`/`vcount_core` into `video_retime`. Whether they are affected
+depends on each core's own pixel-pipeline depth, which is different code and
+has not been measured. The method that settled it here is cheap and transfers
+directly: capture the same static attract screen on the board and in MAME,
+then scan shifts 0..8 for the one that gives zero differing pixels.
 
 ## Hardware coverage after MS1-47 / 49 / 50 / 51 / 53 / 54 / 55 / 56
 
