@@ -380,6 +380,25 @@ def carry_over(path):
         return ''
     return ''.join(CARRY_RE.findall(old))
 
+def alt_dir_name(desc):
+    """The `_alternatives/_<Parent>` directory name for a parent's description.
+
+    The PARENTHETICAL IS DROPPED, so `_alternatives/_E.D.F.- Earth Defense
+    Force` holds every E.D.F. clone rather than the folder being named after
+    one particular set. The directory groups a family; carrying "(set 1)" or
+    "(World)" into its name says the group belongs to that one member, which
+    reads wrong the moment you open it and find the others.
+
+    This is the convention the sibling cores already use -- NMK16 files
+    `Air Attack (set 1).mra` under `_Air Attack`, and
+    `Guardian Storm (horizontal, not encrypted).mra` under `_Guardian Storm`.
+    This generator was the odd one out until it was fixed.
+
+    The .mra FILE names keep their parentheses: those name one set each and
+    have to stay distinct.
+    """
+    return fat_safe(desc.split(' (', 1)[0].rstrip())
+
 # ---------------------------------------------------------------- check
 def build_stream(setname, byname, bycrc, strict_names):
     """The index-0 byte stream exactly as the core will receive it."""
@@ -521,7 +540,7 @@ def main():
         fn = fat_safe(e['desc']) + '.mra'
         if e['parent']:
             parent_desc = ROMDATA[e['parent']]['desc']
-            d = os.path.join(alt, '_' + fat_safe(parent_desc))
+            d = os.path.join(alt, '_' + alt_dir_name(parent_desc))
         else:
             d = RELEASES
         os.makedirs(d, exist_ok=True)

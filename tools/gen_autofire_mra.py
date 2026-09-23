@@ -54,8 +54,10 @@ DST = os.path.join(ROOT, "autofire_releases")
 
 # Parent titles (as the releases/ file name and the `_alternatives/_<Parent>`
 # directory name begin) that get an autofire copy, they and every clone filed
-# under them. Matched as a prefix, so "E.D.F.- Earth Defense Force (set 1)"
-# and "_E.D.F.- Earth Defense Force (set 1)" both qualify from one entry.
+# under them. Matched as a prefix, so the parent file
+# "E.D.F.- Earth Defense Force (set 1).mra" and the clone directory
+# "_E.D.F.- Earth Defense Force" both qualify from one entry -- the directory
+# name drops the parenthetical, the file name keeps it.
 #
 # The other five families are left out on purpose: 64th Street and Avenging
 # Spirit are belt-scrollers whose button 3 is a real move, Big Striker is a
