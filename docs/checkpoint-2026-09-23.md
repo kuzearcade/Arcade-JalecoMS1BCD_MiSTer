@@ -29,7 +29,7 @@ standing gates:
 | gate | what it compares | result |
 |---|---|---|
 | M2 (1) | 68000 bus against MAME's own trace | see `docs/m2-gate1.md` |
-| M2 (2) | frames pixel-for-pixel against MAME captures | `64street` 147/200, `avspirit` and `peekaboo` clean — `docs/m2-gate2.md` |
+| M2 (2) | frames pixel-for-pixel against MAME captures | `avspirit` 150/151, `64street` 147/200, in contiguous runs of 145 and 122 frames — `docs/m2-gate2.md` |
 | M2 (3) | per-frame YM/OKI write counts against MAME | `avspirit` 2383/2400, `64street` 2398/2400, every difference exactly one write across a frame boundary |
 | M2 (4) | band correlation per source, FM and each OKI isolated | `docs/m2-gate34.md` |
 | M3 | the same frames through the real SDRAM controller and cache | `docs/m3-gate1.md`, `docs/m3-gate4.md` |
