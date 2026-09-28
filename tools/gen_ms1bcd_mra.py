@@ -348,6 +348,16 @@ def mra(setname):
 # generic layout; peekaboo's panel adds a fourth ("option"), and its third is
 # the "stage clear" button rather than a normal attack.  hayaosi1 wants five
 # and gets three -- its buttons 4 and 5 are on the keyboard. MS1-41.
+# The games' own names for their buttons (GitHub issue #1), for every set of
+# each family (a clone shares its parent's INPUT_PORTS). Button 3 is unused
+# in these, so it is "-" and has no default.
+_TWO = {
+    ('64street', '64streetj', '64streetja'): 'Punch,Jump',
+    ('avspirit', 'monkelf'):                 'Attack,Jump',
+    ('chimerab', 'chimeraba'):               'Fire,Super Attack',
+    ('cybattlr',):                           'Shoot,Slash',
+    ('edf', 'edfa', 'edfb', 'edfu'):         'Fire,Formation',
+}
 BUTTONS = {
     'peekaboo':  'Button 1,Button 2,Stage Clear,Option,Start,Coin',
     'peekaboou': 'Button 1,Button 2,Stage Clear,Option,Start,Coin',
@@ -356,6 +366,10 @@ BUTTON_DEFAULTS = {
     'peekaboo':  'Y,B,A,X,Start,R',
     'peekaboou': 'Y,B,A,X,Start,R',
 }
+for _sets, _names in _TWO.items():
+    for _s in _sets:
+        BUTTONS[_s] = _names + ',-,Start,Coin'
+        BUTTON_DEFAULTS[_s] = 'A,B,-,Start,R'
 
 def buttons_xml(setname):
     names = BUTTONS.get(setname, 'Button 1,Button 2,Button 3,Start,Coin')
