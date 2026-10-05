@@ -196,10 +196,12 @@ only appears under `quartus_sh --flow compile`. Running `quartus_map` alone
 fails with `can't open Verilog Design File "build_id.v"` until one full flow
 has run.
 
-The bitstream is at `releases/Arcade-JalecoMS1BCD_20260923.rbf`: 69 % of the
-ALMs, **544 of 553 M10K**, **0 timing violations**. It carries System D
-(MS1-56), the lookahead fix (MS1-57), the video alignment fix (MS1-59), the
-four OSD features (MS1-39) and the sprite-pass fix (MS1-60).
+The bitstream is at `releases/Arcade-JalecoMS1BCD_20261005.rbf`: 69 % of the
+ALMs, **544 of 553 M10K**, **0 timing violations** (setup +0.459, hold
++0.098 ns). It carries System D (MS1-56), the lookahead fix (MS1-57), the
+video alignment fix (MS1-59), the four OSD features (MS1-39), the sprite-pass
+fix (MS1-60), the high-score restore fixes (MS1-63: work RAM as byte-lane
+arrays, no dump check, a 512-byte capture) and the OKI level (MS1-64).
 
 MS1-39 is what made the M10K figure tight: 538 -> 544, nine blocks spare. The
 cost is not the high-score and cheat engines themselves -- their tables are

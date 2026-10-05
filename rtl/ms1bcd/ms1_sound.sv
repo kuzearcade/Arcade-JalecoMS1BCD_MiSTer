@@ -524,30 +524,37 @@ module ms1_sound (
 	wire [2:0] ipl = (ipl_park != 3'd0) ? ipl_park : ipl_game;
 
 	// ---------------------------------------------------------------- mix
-	// MAME: YM2151 routed at 0.80 to both channels, each OKI at 0.30.
-	// 0.80 ~ 13/16 and 0.30 ~ 5/16; the OKI is 14-bit so it is shifted up two
-	// places first to sit on the same scale as the FM.
-	wire signed [21:0] fm_l   = $signed(ym_l) * 22'sd13;
-	wire signed [21:0] fm_r   = $signed(ym_r) * 22'sd13;
-	// System D has ONE OKI and routes it at 1.0, not at 0.30 -- it is the
-	// whole soundtrack, not one voice under an FM mix. At B/C's gain the
-	// game is audible but about 10 dB down.
-	wire signed [21:0] pcm1_bc = ($signed(oki1_snd) <<< 2) * 22'sd5;
-	wire signed [21:0] pcm1_d  = ($signed(oki1_snd) <<< 2) * 22'sd16;
-	wire signed [21:0] pcm1   = is_d ? pcm1_d : pcm1_bc;
-	wire signed [21:0] pcm2   = ($signed(oki2_snd) <<< 2) * 22'sd5;
-	wire signed [21:0] mix_l  = (fm_l + pcm1 + pcm2) >>> 4;
-	wire signed [21:0] mix_r  = (fm_r + pcm1 + pcm2) >>> 4;
+	// MAME: YM2151 routed at 0.80 to both channels, each OKI at 0.30 (System D:
+	// its one OKI at 1.0). 0.80 ~ 13/16 and 0.30 ~ 5/16.
+	// Scale: MAME's OKI puts ONE voice at full volume on 16-bit full scale
+	// (okim6295.cpp: clock() * volume / 2048). jt6295's `sound` is the sum of
+	// four 12-bit voices in 14 bits, one voice spanning +-2048, so it is
+	// shifted up FOUR places to reach that scale. It was shifted two, which
+	// left every OKI 12 dB under MAME's (measured -11.6 dB per source, the FM
+	// within 0.2 dB): the effects of B and C (issue #3, MS1-64).
+	// System D stays at its released level, x4 here (the old x16 at the old
+	// scale), 12 dB under MAME's 1.0: at MAME's level peekaboo's OKI clips
+	// 1.8 % of MAME's own samples and 0.6 % on the board.
+	wire signed [23:0] fm_l   = $signed(ym_l) * 24'sd13;
+	wire signed [23:0] fm_r   = $signed(ym_r) * 24'sd13;
+	wire signed [23:0] oki1_s = $signed(oki1_snd) <<< 4;
+	wire signed [23:0] oki2_s = $signed(oki2_snd) <<< 4;
+	wire signed [23:0] pcm1_bc = oki1_s * 24'sd5;
+	wire signed [23:0] pcm1_d  = oki1_s * 24'sd4;
+	wire signed [23:0] pcm1   = is_d ? pcm1_d : pcm1_bc;
+	wire signed [23:0] pcm2   = oki2_s * 24'sd5;
+	wire signed [23:0] mix_l  = (fm_l + pcm1 + pcm2) >>> 4;
+	wire signed [23:0] mix_r  = (fm_r + pcm1 + pcm2) >>> 4;
 	// The clamp rails are written as bit patterns, not as signed decimals:
 	// -16'sd32768 is a 16-bit signed literal holding a value that does not fit
 	// in 16 bits, which Quartus reports as a constant overflow (Verilator says
 	// nothing). It happens to truncate to 0x8000 and negate back to 0x8000, so
 	// the old form was right by accident; these are the same two patterns said
 	// plainly.
-	assign snd_l = (mix_l >  22'sd32767) ? 16'sh7FFF :
-	               (mix_l < -22'sd32768) ? 16'sh8000 : mix_l[15:0];
-	assign snd_r = (mix_r >  22'sd32767) ? 16'sh7FFF :
-	               (mix_r < -22'sd32768) ? 16'sh8000 : mix_r[15:0];
+	assign snd_l = (mix_l >  24'sd32767) ? 16'sh7FFF :
+	               (mix_l < -24'sd32768) ? 16'sh8000 : mix_l[15:0];
+	assign snd_r = (mix_r >  24'sd32767) ? 16'sh7FFF :
+	               (mix_r < -24'sd32768) ? 16'sh8000 : mix_r[15:0];
 
 	fx68k u_scpu (
 		.clk(clk), .HALTn(1'b1), .extReset(cpu_rst), .pwrUp(cpu_rst),

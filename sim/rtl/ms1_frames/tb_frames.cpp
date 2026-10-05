@@ -431,7 +431,10 @@ int main(int argc, char **argv) {
 					for (size_t i = 0; i < n; i++) v[i] = (uint16_t)src[i];
 					return v;
 				};
-				sn.wram = cp(R->ms1bcd_core__DOT__u_main__DOT__wram, 32768);
+				// work RAM is two byte-lane arrays (MS1-63)
+				sn.wram.assign(32768, 0);
+				for (size_t i = 0; i < 32768; i++)
+					sn.wram[i] = (uint16_t)((R->ms1bcd_core__DOT__u_main__DOT__wram_h[i] << 8) | R->ms1bcd_core__DOT__u_main__DOT__wram_l[i]);
 				sn.v0   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr0, 8192);
 				sn.v1   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr1, 8192);
 				sn.v2   = cp(R->ms1bcd_core__DOT__u_main__DOT__vr2, 8192);

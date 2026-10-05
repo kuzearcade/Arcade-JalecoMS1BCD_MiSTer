@@ -71,6 +71,8 @@ pixel for pixel.
 | MS1-58 | The sim Makefiles do not depend on the RTL verilator finds through `-y` | closed — `RTLSRC` wildcard; a fix in ms1_video.sv left the old binary in place and the next run re-measured the bug |
 | MS1-60 | The sprite pass overruns blanking by ~15 rows, so the top of the plane is read while it is still being drawn | fixed — clear swept behind the display read; 212970 -> 151372 clk, inside the 165888 budget |
 | MS1-59 | Every game shows a five-pixel strip down the left of the screen | closed — the core's pixel lags its raster position by 5; measured 5 px -> 0 px against MAME on the board |
+| MS1-63 | High scores never restored (issue #2): back-door byte writes stored whole words, a file check discarded real saves, E.D.F.'s table overflowed the capture buffer | fixed — work RAM split into byte-lane arrays, the check removed, capture 512 bytes; 12/12 sets save and restore on the board |
+| MS1-64 | The OKIs (B and C's effects) sat 12 dB under MAME (issue #3) | fixed — jt6295 put on MAME's scale (<<4); mix within 0.4 dB of MAME in sim, FM and OKI each within 0.5 dB; System D left at its released level |
 
 ---
 
@@ -3093,3 +3095,87 @@ the one configuration that does not execute that code. The SDRAM path's
 pixels are now compared against the oracle directly, not only against the
 reference sim, and that should be a standing gate rather than something done
 once for System D.
+
+
+## MS1-63 — High scores never restored: three faults on the one path (fixed)
+
+Reported as issue #2 (Avenging Spirit: High Scores on, the scores do not come
+back). Measured with a board sweep of all 12 `.mra` that carry a hiscore.dat
+table, as for NMK16 (NMK-37): High Scores on, no `.nvm`, 30 s of attract, OSD
+opened, the written file compared with MAME's RAM at frame 1200; then one
+score byte of that file changed, the core reloaded and the OSD opened again
+(a restore that did not land leaves RAM unlike the file, and the autosave
+then writes the game's table over it); then the saved table's last byte
+changed the same way. On the 20260923 release: 9 sets saved a file matching
+MAME's table, the three E.D.F. sets saved nothing, and **no set restored**.
+
+**1. The back door's byte writes stored whole words.** After a reload every
+even-address byte of the table (the high lane) read 0 -- "JAL" came back as
+"\0A\0". `ms1_main` wrote one lane, `wram[i][7:0] <= hs_din`, into 16-bit
+arrays; Quartus 17 inferred them with no byte enables (the map report:
+`WIDTH_BYTEENA_A = 1`), so every write stored the whole word and the other
+lane took whatever the data mux held. Every simulation honours the lane and
+was correct. The CPU never noticed: its byte writes fill both lanes anyway
+(MAME's `ram_w` quirk). The cheats use the same back door, so a cheat poke
+also cleared its neighbour byte -- the MS1-39 "CREDITS 99" check looked only
+at the poked byte. Fix: `wram` and `wram_s` are each two 8-bit arrays
+(`wram_h`/`wram_l`, `wrs_h`/`wrs_l`) with a write enable per lane; the same
+M10K count (four 32K x 8 RAMs, `Simple Dual Port`). `sim/rtl/ms1_frames`'
+snapshot reads the two halves.
+
+MAME's own hiscore plugin shows the same zeroed high lane on 64street,
+avspirit and cybattlr, for a different reason: `ram_w` stores the whole word
+(`m_ram[offset] = data`, no COMBINE_DATA), and the plugin's byte write leaves
+the other lane 0 where a 68000 would drive both.
+
+**2. The dump check copied from NMK16.** `hiscore.v` was NMK16's v2026-10-04
+copy, with the NMK-33 validation that discards a file whose entries' first or
+last byte differs from the config's start/end values -- which a new score in
+the table changes (NMK16 NMK-37). With fault 1 fixed, changing only the saved
+table's last byte still made every set throw its scores away. Removed:
+`hiscore.v` is NMK16's current file (upstream's restore path).
+
+**3. E.D.F. never saved.** The module was built with `HS_SCOREWIDTH(8)`, a
+256-byte capture buffer, under a comment that it was more than any set needs;
+E.D.F.'s three records are 268 bytes, the 8-bit buffer address never reached
+268, and the extraction loop never finished, so no upload was ever requested.
+Now `HS_SCOREWIDTH(9)`.
+
+**Verified** on a DE10-Nano with the rebuilt rbf, all 12 sets (64street,
+64streetj, avspirit, monkelf, bigstrik, chimerab, cybattlr, edf, edfa, edfu,
+peekaboo, peekaboou): the save matches MAME's table (avspirit apart from its
+top score's first byte, which the game fills later than frame 1200 and
+rewrites after a restore); a changed score byte is restored (avspirit: an
+initial); a changed last byte is kept. High Scores is Off by default and
+needs System -> Save settings to survive a reload, as before.
+
+The board's `games/mame` held only an old `avspirit.zip` and `edf.zip` for
+these sets: with that `avspirit.zip` the game boots to black. The test used
+the zips the `.mra` files are generated from.
+
+## MS1-64 — Effects 12 dB under the music: jt6295 was on a quarter of MAME's scale (fixed)
+
+Reported as issue #3: in 64th Street the punches and throws are very quiet and
+the music loud. Measured with `sim/rtl/ms1_snd` against MAME rendered one
+source at a time (`MS1_SND_ISO`), each source as it enters the final mix: the
+FM within 0.2 dB of MAME on both games, every OKI **11.5-11.6 dB under**
+(64street OKI #1, avspirit OKI #1 and #2); the mix 2.8 / 3.5 dB under. In
+MAME 64street's OKI is as loud as its FM (67.2 against 66.6 dB); in the core
+it was 11 dB down.
+
+Cause: MAME's OKI puts one voice at full volume on 16-bit full scale
+(`okim6295.cpp`: `clock() * volume / 2048`). jt6295's `sound` is four 12-bit
+voices summed in 14 bits, so one voice spans +-2048; `ms1_sound` shifted it
+up two places, a quarter of MAME's scale. The M2 gate-4 table (docs/
+m2-gate34.md) had this in it: it compared the core's raw OKI tap with MAME's
+render after its 0.30 route, so "+0.3 dB" meant 10 dB too quiet in the mix.
+
+Fix: the OKIs are shifted up four places, then routed as MAME does (x5/16 for
+B and C), in a 24-bit mix. In sim: the mix +0.4 dB (64street) and +0.3 dB
+(avspirit) against MAME, each OKI +0.5 dB; on the board 64street's attract
++1.7 dB against MAME with no clipped samples.
+
+**System D is left where it was.** MAME routes peekaboo's single OKI at 1.0,
+and at that level MAME's own output clips 1.8 % of its samples (the fixed
+scale at 1.0 clipped 0.6 % on the board). The core keeps the released level,
+x4 on the new scale, 12 dB under MAME's, which does not clip.

@@ -402,8 +402,16 @@ module ms1_main (
 	// runs during vblank while the CPU is still executing. Quartus reported
 	// this as "uninferred due to asynchronous read logic" even though both
 	// reads are synchronous; the real objection is the port count.
-	reg [15:0] wram  [0:32767];   // read by the CPU and the savestate
-	reg [15:0] wram_s[0:32767];   // read by the sprite buffer copy only
+	// Each copy is TWO byte-wide arrays, high and low lane. The high-score and
+	// cheat back door writes ONE byte; written as wram[i][7:0] into a 16-bit
+	// array, Quartus 17 inferred the RAM with no byte enables
+	// (WIDTH_BYTEENA_A = 1), so the "byte" write stored the whole word and
+	// zeroed the other lane on hardware while every simulation was correct
+	// (issue #2, MS1-63). Two 8-bit arrays have a write enable each.
+	reg  [7:0] wram_h[0:32767];   // read by the CPU and the savestate
+	reg  [7:0] wram_l[0:32767];
+	reg  [7:0] wrs_h [0:32767];   // read by the sprite buffer copy only
+	reg  [7:0] wrs_l [0:32767];
 	// TWO COPIES of the palette (docs/m4-video-array-plan.md).
 	// pal_v serves the video read, pal_c the CPU and the savestate -- which
 	// are mutually exclusive, since the core is parked while an image streams.
@@ -451,6 +459,22 @@ module ms1_main (
 	wire [15:0] ss_mcu_rdata;
 	wire ss_w    = ss_active & ss_wr;
 
+	// ---- work RAM writes: the savestate engine, else the back door, else the
+	// CPU (the priority of the block below). The CPU's byte writes already
+	// fill both lanes (the quirk); only the back door writes one.
+	wire [14:0] hs_wi   = hs_addr[15:1];
+	wire        wr_ss   = ss_w & ss_wram;
+	wire        wr_hs   = ~ss_w & hs_access & hs_write;
+	wire        wr_cpu  = ~ss_w & ~hs_access & we & sel_ram;
+	wire        wram_wh = wr_ss | (wr_hs & ~hs_addr[0]) | wr_cpu;
+	wire        wram_wl = wr_ss | (wr_hs &  hs_addr[0]) | wr_cpu;
+	wire [14:0] wram_wa = ss_w ? ss_addr[14:0] : hs_access ? hs_wi : wram_i;
+	wire [15:0] wram_wd = ss_w ? ss_wdata : hs_access ? {hs_din, hs_din} : ram_wdat;
+	always @(posedge clk) begin
+		if (wram_wh) begin wram_h[wram_wa] <= wram_wd[15:8]; wrs_h[wram_wa] <= wram_wd[15:8]; end
+		if (wram_wl) begin wram_l[wram_wa] <= wram_wd[7:0];  wrs_l[wram_wa] <= wram_wd[7:0];  end
+	end
+
 	reg [15:0] rdat;
 	always @(posedge clk) begin
 		dbg_ramw <= we & sel_ram;
@@ -459,10 +483,7 @@ module ms1_main (
 		dbg_ramw_data <= ram_wdat;
 		if (ss_w) begin
 			// The engine owns the ports while it is streaming an image down.
-			if (ss_wram) begin
-				wram  [ss_addr[14:0]] <= ss_wdata;
-				wram_s[ss_addr[14:0]] <= ss_wdata;
-			end
+			// (work RAM: the lane-split block above)
 			if (ss_pal) begin
 				pal_v[ss_addr[9:0]] <= ss_wdata;
 				pal_c[ss_addr[9:0]] <= ss_wdata;
@@ -473,24 +494,12 @@ module ms1_main (
 				obj_c[ss_addr[11:0]] <= ss_wdata;
 			end
 		end else if (hs_access) begin
-			// The back door owns the port while the CPU is paused. ONE byte,
-			// not a mirrored pair: the work-RAM quirk below belongs to the
-			// 68000's write path, and applying it here would corrupt the
-			// neighbouring byte of every score.
-			if (hs_write) begin
-				if (~hs_addr[0]) begin
-					wram  [hs_wi][15:8] <= hs_din;
-					wram_s[hs_wi][15:8] <= hs_din;
-				end else begin
-					wram  [hs_wi][7:0]  <= hs_din;
-					wram_s[hs_wi][7:0]  <= hs_din;
-				end
-			end
+			// The back door owns the port while the CPU is paused. It writes
+			// ONE byte of work RAM, not a mirrored pair -- the work-RAM quirk
+			// belongs to the 68000's write path, and applying it here would
+			// corrupt the neighbouring byte of every score. That write is in
+			// the lane-split block above; nothing else is written here.
 		end else if (we) begin
-			if (sel_ram) begin
-				wram  [wram_i] <= ram_wdat;
-				wram_s[wram_i] <= ram_wdat;
-			end
 			if (sel_pal) begin
 				pal_v[pal_i] <= wdat;
 				pal_c[pal_i] <= wdat;
@@ -554,10 +563,9 @@ module ms1_main (
 	// while an image streams). An asynchronous read would leave all 512 Kbit
 	// of this as flip-flops -- MS1-37, docs/PLAN.md 4.C.1.
 	// 68000 byte order: address bit 0 clear is the HIGH byte of the word.
-	wire [14:0] hs_wi = hs_addr[15:1];
 	wire [14:0] wram_rd_i = ss_active ? ss_addr[14:0] : hs_access ? hs_wi : wram_i;
 	reg  [15:0] wram_q;
-	always @(posedge clk) wram_q <= wram[wram_rd_i];
+	always @(posedge clk) wram_q <= {wram_h[wram_rd_i], wram_l[wram_rd_i]};
 	// Registered one more stage than the address, matching wram_q, so the
 	// reader sees the byte of the address it presented.
 	reg hs_a0_q;
@@ -595,7 +603,7 @@ module ms1_main (
 		sb1_q  <= spr_b1[sb1_ri];
 		sb2_q  <= spr_b2[sb2_ri];
 		obj_q  <= obj_v[cp_i];
-		wrms_q <= wram_s[15'h4000 + {3'd0, cp_i}];
+		wrms_q <= {wrs_h[15'h4000 + {3'd0, cp_i}], wrs_l[15'h4000 + {3'd0, cp_i}]};
 		cp_i_d <= cp_i;
 		cp_run <= buf_busy;
 	end

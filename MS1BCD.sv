@@ -815,7 +815,8 @@ assign ioctl_upload_req = hs_upload_req_raw & hs_active;
 
 hiscore #(
 	.HS_ADDRESSWIDTH(24),
-	.HS_SCOREWIDTH(8),       // 256 bytes of capture, more than any of the 16
+	.HS_SCOREWIDTH(9),       // 512 bytes of capture: E.D.F.'s three records are 268
+	                         // bytes, and at 8 (256) its save never finished (MS1-63)
 	.CFG_ADDRESSWIDTH(4),    // up to 16 hiscore.dat records
 	.CFG_LENGTHWIDTH(2)
 ) hi (
