@@ -344,10 +344,12 @@ def mra(setname):
 """
 
 # MiSTer's <buttons> list is what the OSD offers to remap, so a button with
-# no entry here cannot be bound to a pad at all. Three names covers the
-# generic layout; peekaboo's panel adds a fourth ("option"), and its third is
-# the "stage clear" button rather than a normal attack.  hayaosi1 wants five
-# and gets three -- its buttons 4 and 5 are on the keyboard. MS1-41.
+# no entry here cannot be bound to a pad at all. Three names covers every
+# layout. peekaboo's are Fire, Left and Right: Left and Right move the paddle
+# when the Movement DIP is on Buttons (in Paddles, the default, the analog
+# paddle moves it), and its third button is each player's Right, not MAME's
+# "stage clear" (MS1-65). hayaosi1 wants five and gets three -- its buttons
+# 4 and 5 are on the keyboard. MS1-41.
 # The games' own names for their buttons (GitHub issue #1), for every set of
 # each family (a clone shares its parent's INPUT_PORTS). Button 3 is unused
 # in these, so it is "-" and has no default.
@@ -359,12 +361,12 @@ _TWO = {
     ('edf', 'edfa', 'edfb', 'edfu'):         'Fire,Formation',
 }
 BUTTONS = {
-    'peekaboo':  'Button 1,Button 2,Stage Clear,Option,Start,Coin',
-    'peekaboou': 'Button 1,Button 2,Stage Clear,Option,Start,Coin',
+    'peekaboo':  'Fire,Left,Right,Start,Coin',
+    'peekaboou': 'Fire,Left,Right,Start,Coin',
 }
 BUTTON_DEFAULTS = {
-    'peekaboo':  'Y,B,A,X,Start,R',
-    'peekaboou': 'Y,B,A,X,Start,R',
+    'peekaboo':  'Y,B,A,Start,R',
+    'peekaboou': 'Y,B,A,Start,R',
 }
 for _sets, _names in _TWO.items():
     for _s in _sets:

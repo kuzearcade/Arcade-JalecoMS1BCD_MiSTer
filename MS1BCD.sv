@@ -487,15 +487,13 @@ wire p2_b3 = af2_en ? 1'b0 : p2_raw[6];
 wire lay_peek = (mode == 2'd2);
 wire lay_haya = (mode == 2'd0) & (prot_sel == 2'd1);
 
-// MiSTer numbers the pad's buttons by POSITION IN THE .mra's <buttons> LIST,
-// so Start and Coin sit at bits 7 and 8 on a three-name list and at 8 and 9
-// on peekaboo's four-name one. Hard-coding 7 and 8 therefore puts Start on
-// peekaboo's "option" button and Coin on Start. Named here once.
-wire p1_start = lay_peek ? joystick_0[8] : joystick_0[7];
-wire p2_start = lay_peek ? joystick_1[8] : joystick_1[7];
-wire p1_coin  = lay_peek ? joystick_0[9] : joystick_0[8];
-wire p2_coin  = lay_peek ? joystick_1[9] : joystick_1[8];
-wire p1_b4    = joystick_0[7] | kb_p1_b4;   // peekaboo "option"; pad + Shift
+// MiSTer numbers the pad's buttons by POSITION IN THE .mra's <buttons> LIST:
+// every set's list names three buttons, so Start and Coin are bits 7 and 8.
+// (peekaboo's named four until MS1-65, and had Start and Coin one bit up.)
+wire p1_start = joystick_0[7];
+wire p2_start = joystick_1[7];
+wire p1_coin  = joystick_0[8];
+wire p2_coin  = joystick_1[8];
 
 // --- generic: P1/P2 bit 0 right, 1 left, 2 down, 3 up, 4 B1, 5 B2, 6 B3.
 //     SYSTEM bit 0 start 1, 1 start 2, 5 service, 6 coin 1, 7 coin 2.
@@ -528,11 +526,15 @@ wire [7:0] h_sys = ~{p2_coin | kb_coin2, p1_coin | kb_coin1, kb_service,
 //     SYSTEM is a 16-BIT port on this board. The low half is the four coin
 //     inputs and the two starts, as elsewhere; the HIGH half carries the six
 //     buttons, and System D's map reads the whole word at 0F0000. MS1-42.
-//     high bit  0     1     2     3     4            5         6,7
-//               P1 B1 P1 B2 P2 B1 P2 B2 B3 "clear"   B4 "opt"  unknown
-//     B3 and B4 are single shared panel buttons, not per-player, so both
-//     come off pad 1. peekaboo's .mra names four buttons rather than three,
-//     which is also why Start and Coin move up a bit on this layout.
+//     high bit  0     1     2     3     4      5      6,7
+//               P1 B1 P1 B2 P2 B1 P2 B2 P1 B3  P2 B3  unknown
+//     MAME calls bits 4 and 5 BUTTON3 "stage clear" and BUTTON4 "option",
+//     shared panel buttons. The game's code says otherwise (MS1-65): with
+//     the Movement DIP on Buttons it builds each player's move word from
+//     SYSTEM (0x48xx-0x49xx), P1 left = bit 1, P1 right = bit 4, P2 left =
+//     bit 3, P2 right = bit 5, and nothing else reads bits 4 or 5. So each
+//     player has Fire, Left, Right on their own pad. Right is the raw third
+//     button: the autofire path (p1_b3) would zero it and fold it into Fire.
 wire  [7:0] pad_cl  = (paddle_0 < 8'h18) ? 8'h18 : (paddle_0 > 8'hE0) ? 8'hE0 : paddle_0;
 wire  [7:0] pad2_cl = (paddle_1 < 8'h18) ? 8'h18 : (paddle_1 > 8'hE0) ? 8'hE0 : paddle_1;
 wire  [7:0] k_p1   = pad_cl;
@@ -545,8 +547,10 @@ wire  [7:0] k_sys  = ~{2'b00,
                        p2_start | kb_start2, p1_start | kb_start1,
                        p2_coin | kb_coin2,  p1_coin | kb_coin1,
                        1'b0, kb_service};
-wire  [7:0] k_syshi = ~{2'b00, p1_b4, p1_b3,
-                        p2_raw[5], p2_b1, p1_raw[5], p1_b1};
+wire        k_p1_fire = af1_en ? (p1_raw[4] & (af1_phase < af_on(af1_mode))) : p1_raw[4];
+wire        k_p2_fire = af2_en ? (p2_raw[4] & (af2_phase < af_on(af2_mode))) : p2_raw[4];
+wire  [7:0] k_syshi = ~{2'b00, p2_raw[6], p1_raw[6],
+                        p2_raw[5], k_p2_fire, p1_raw[5], k_p1_fire};
 
 wire [7:0] in_p1     = lay_peek ? k_p1  : lay_haya ? h_p1  : g_p1;
 wire [7:0] in_p2     = lay_peek ? k_p2  : lay_haya ? h_p2  : g_p2;

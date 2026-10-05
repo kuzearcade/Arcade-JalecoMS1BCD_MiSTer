@@ -73,6 +73,7 @@ pixel for pixel.
 | MS1-59 | Every game shows a five-pixel strip down the left of the screen | closed — the core's pixel lags its raster position by 5; measured 5 px -> 0 px against MAME on the board |
 | MS1-63 | High scores never restored (issue #2): back-door byte writes stored whole words, a file check discarded real saves, E.D.F.'s table overflowed the capture buffer | fixed — work RAM split into byte-lane arrays, the check removed, capture 512 bytes; 12/12 sets save and restore on the board |
 | MS1-64 | The OKIs (B and C's effects) sat 12 dB under MAME (issue #3) | fixed — jt6295 put on MAME's scale (<<4); mix within 0.4 dB of MAME in sim, FM and OKI each within 0.5 dB; System D left at its released level |
+| MS1-65 | Peek-a-Boo's buttons 3 and 4 are each player's Right in Buttons mode, not "stage clear"/"option" (issue #1) | fixed — Fire/Left/Right on each player's own pad; P2's Right moved from pad 1's fourth button to pad 2's third; board-tested |
 
 ---
 
@@ -3179,3 +3180,52 @@ B and C), in a 24-bit mix. In sim: the mix +0.4 dB (64street) and +0.3 dB
 and at that level MAME's own output clips 1.8 % of its samples (the fixed
 scale at 1.0 clipped 0.6 % on the board). The core keeps the released level,
 x4 on the new scale, 12 dB under MAME's, which does not clip.
+
+
+## MS1-65 — Peek-a-Boo's third and fourth buttons are the players' Right (fixed)
+
+Issue #1 asked for Peek-a-Boo's buttons to read "Fire, Paddle Left, Paddle
+Right". The core followed MAME's labels instead: SYSTEM bit 12 is
+`IPT_BUTTON3 // called "stage clear"`, bit 13 `IPT_BUTTON4 // called
+"option"`, neither with a player, so `MS1BCD.sv` took both from pad 1 and the
+`.mra` named the four buttons "Button 1, Button 2, Stage Clear, Option".
+
+**What the game does with them**, from its program ROM (disassembled with
+MAME's unidasm) and checked in MAME with Lua-driven input:
+
+- The Movement DIP (Paddles, the default, or Buttons) is kept at 0x1F0392.
+- With it on Buttons, the code at 0x4940 builds each player's move word
+  from SYSTEM (0x0F0000): player 1 from bits 0x1200, player 2 from 0x2800,
+  each folded onto 0x2000 = left, 0x1000 = right, and the routine at 0xC234
+  moves that player's paddle by it. So P1 left is bit 9 (P1 B2), **P1 right
+  bit 12** ("stage clear"), P2 left bit 11 (P2 B2), **P2 right bit 13**
+  ("option").
+- Nothing else in the program reads bits 12 or 13: the edge-detected copies
+  of SYSTEM are only ever tested with other masks.
+- In Paddles mode the paddle comes from the analog port alone; no button
+  moves it. Button 1 fires/launches and confirms the model in both modes.
+
+In MAME (Buttons mode, holding a button half a second at a time, the paddle's
+x from screenshots): Button 2 86 -> 23, Button 1 no movement; in Paddles mode
+neither moves it.
+
+**Fix.** `MS1BCD.sv`: SYSTEM bit 12 is pad 1's third button and bit 13 pad
+2's third, read raw (the autofire path zeroes `p1_b3` and folds it into fire;
+Fire here is Button 1 alone, with its autofire). The `.mra` names three
+buttons, `Fire,Left,Right` (defaults Y, B, A), so Start and Coin are bits 7
+and 8 as on every other set and the System D special case for them is gone.
+`tools/gen_ms1bcd_mra.py` carries the names.
+
+**Verified on a DE10-Nano**, keyboard only (MAME's keys: P1 Left Ctrl / Alt /
+Space, P2 A / S / Q), Movement on Buttons and two controllers by a `.dip`
+(`77 FF 72`), a two-player game, the paddle's x tracked in HDMI captures
+(10 fps on player 2's turn):
+
+| build | P1 Alt (left) | P1 Space (right) | P2 S (left) | P2 Q (right) |
+|---|---|---|---|---|
+| 20261005 release | 248 -> 137 | -> 249 | 248 -> 136 | no movement |
+| this change | 248 -> 137 | -> 249 | 248 -> 136 | 136 -> 360 |
+
+Paddles mode (no `.dip`) starts and plays as before. The pad's own button
+positions follow the same `joystick_0[7]`/`[8]` Start/Coin as every other set;
+the test rig has no virtual pad, so that half rests on the shared path.
