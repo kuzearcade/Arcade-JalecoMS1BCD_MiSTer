@@ -35,7 +35,7 @@
 
   <buttons names="Punch,Jump,-,Start,Coin" default="A,B,-,Start,R"/>
 
-  <rom index="0" zip="64street.zip" md5="none">
+  <rom index="0" zip="64street.zip" md5="none" address="0x30000000">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
       <part crc="ed6c6942" name="rb-91105_3_ver_e1.1.ic53" map="01"/>

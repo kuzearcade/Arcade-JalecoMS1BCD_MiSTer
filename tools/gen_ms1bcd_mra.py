@@ -338,7 +338,7 @@ def mra(setname):
 {switches_xml(setname, cfg)}
 {buttons_xml(setname)}
 
-  <rom index="0" zip="{mra_zip_attr(setname)}" md5="none">
+  <rom index="0" zip="{mra_zip_attr(setname)}" md5="none" address="0x30000000">
 {parts_xml(setname)}{patches_xml(setname)}  </rom>
 {prom_xml(setname)}</misterromdescription>
 """

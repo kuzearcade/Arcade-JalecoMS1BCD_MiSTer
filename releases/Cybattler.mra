@@ -38,7 +38,7 @@
 
   <buttons names="Shoot,Slash,-,Start,Coin" default="A,B,-,Start,R"/>
 
-  <rom index="0" zip="cybattlr.zip" md5="none">
+  <rom index="0" zip="cybattlr.zip" md5="none" address="0x30000000">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
       <part crc="bee20587" name="cb_03.rom" map="01"/>

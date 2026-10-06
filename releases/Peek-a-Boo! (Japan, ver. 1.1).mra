@@ -37,7 +37,7 @@
 
   <buttons names="Fire,Left,Right,Start,Coin" default="Y,B,A,Start,R"/>
 
-  <rom index="0" zip="peekaboo.zip" md5="none">
+  <rom index="0" zip="peekaboo.zip" md5="none" address="0x30000000">
     <!-- maincpu 0x040000 @ 0x000000 -->
     <interleave output="16">
       <part crc="f5f4cf33" name="peek a boo j ver 1.1 - 3.ic29" map="01"/>

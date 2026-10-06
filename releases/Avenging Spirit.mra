@@ -36,7 +36,7 @@
 
   <buttons names="Attack,Jump,-,Start,Coin" default="A,B,-,Start,R"/>
 
-  <rom index="0" zip="avspirit.zip" md5="none">
+  <rom index="0" zip="avspirit.zip" md5="none" address="0x30000000">
     <!-- maincpu 0x080000 @ 0x000000 -->
     <interleave output="16">
       <part crc="b26a341a" name="jaleco_a.spirit_5.5b" map="01"/>
