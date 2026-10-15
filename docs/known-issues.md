@@ -3346,3 +3346,33 @@ the card lost the picture after the reset; with this change the signal runs
 through it (64th. Street). HDMI is as before.
 
 Timing met at the project's seed (setup +0.399 ns, hold +0.231 ns).
+
+## MS1-69 — A savestate let the cheat walk take main RAM from a running CPU (closed, measured)
+
+Found from NMKBP964's MP-20, where a save in Macross Plus with cheats on
+crashed the game back to its boot every time; this top had the same wiring.
+The savestate engine masks every pause source while it runs (`ss_busy`),
+because the CPUs have to execute to reach their park monitors, and the mask
+covered `ch_pause` too. The cheat engine still started its poke walk at each
+vblank, and the walk drives main RAM's back door (`hs_access` takes the
+RAM's address and turns the CPU's writes off) believing the CPU is held. So
+during a save the walk and the running CPU could meet on the port: a CPU read
+gets the walk's word and a CPU write is dropped. The park starts on the same
+vblank as the walk, and its level-7 exception pushes the 68000's PC and SR to
+the stack in main RAM: a dropped push resumes the game at a wrong address.
+
+- No walk starts while `ss_busy` is set (`.vblank(vblank_core & ~ss_busy)`).
+- `ch_pause` is outside the `ss_busy` mask, so a walk already under way when
+  a save starts holds the CPU until it ends (a few dozen clocks). No walk
+  starts after that, so the park is never held up.
+- `ss_busy` is declared ahead of the cheat block.
+
+The release was not tried for it here. GingaNin's release, with the same
+wiring, wrote 15 of 15 saves with every cheat on: Macross Plus's 68EC020 met
+the walk every time, while a 68000's exception push evidently comes after
+the walk has ended, so the hole is there without showing. With this change,
+on the board: E.D.F., all four cheats on, 12 saves in play, every one written
+(the `.ss` file's time moved) with the game running on; then F1 went back to
+the saved point and play went on.
+
+Timing met at the project's seed (setup +0.268 ns, hold +0.222 ns).
