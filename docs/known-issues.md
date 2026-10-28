@@ -3376,3 +3376,37 @@ on the board: E.D.F., all four cheats on, 12 saves in play, every one written
 the saved point and play went on.
 
 Timing met at the project's seed (setup +0.268 ns, hold +0.222 ns).
+
+## MS1-70 — jt51 on upstream 2ca6601: the YM2151's measured envelope, timers and stereo windows (closed, measured)
+
+Upstream jt51 985a573 -> 2ca6601, unmodified (NMK16's NMK-45 takes the
+same pin). From upstream's silicon captures: D1L=15 at the envelope's
+bottom (93 dB, as ymfm) instead of 48 dB; decay rates 2-3 progress; attack
+rates 62/63 hold their level; a timer's flag is set only while its IRQ is
+enabled (the IRQ line, which times the music here, is unchanged); CSM
+key-on at a Timer-A start; noise silent at full attenuation; an 18-bit
+wrapping channel sum; left and right summed over the chip's own 16-slot
+windows.
+
+**Measured, jt51 alone.** MAME's YM2151 writes (a Lua tap on the sound
+68000's 080001/080003, 125 s of attract) replayed into jt51 at both pins,
+against ymfm (MAME's YM2151) given the same writes:
+
+| set | level, old -> new | 20 ms envelope corr. | SNR vs ymfm, old -> new |
+|---|---|---|---|
+| 64street | -0.06 -> -0.10 dB | 1.000 | 12.2 -> 12.2 dB |
+| avspirit | -0.33 -> -0.26 dB | 1.000 | 5.3 -> 6.0 dB |
+| cybattlr | -0.38 -> -0.41 dB | 1.000 | 8.3 -> 7.5 dB |
+| edf | -0.27 -> -0.30 dB | 1.000 | 4.0 -> 3.9 dB |
+
+Each channel's octave spectrum is as close to ymfm as before or closer. The
+core keeps the YM2151's left and right apart, so the stereo windows'
+half-sample offset is heard only where a listener sums them (mono: -1.5
+dB at 8 kHz, about -7 dB at 16 kHz against ymfm).
+
+**On the board** (175 s of attract against MAME's full mix, v2026-10-15 ->
+this build): 64th Street band corr. 0.937 -> 0.937, level -1.2 -> -1.0 dB;
+Avenging Spirit 0.985 / 0.983 (two runs) -> 0.976, level +0.2 -> +0.4 dB,
+RMS unchanged. In 20 s windows the change is in the demo-play stretches,
+which also differ between the two old-build runs (0.58 / 0.39); the stable
+windows move by 0.01-0.02, the mono analysis of the stereo windows.
