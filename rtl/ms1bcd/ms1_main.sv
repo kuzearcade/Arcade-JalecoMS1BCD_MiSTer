@@ -797,7 +797,7 @@ module ms1_main (
 	// System D's port is a full word (see pk_rd, below); B and C's is a byte
 	// in the low half.
 	// With the MCU, D's word read is the MCU's port 2 in the low byte, as in
-	// MAME's mcu_r (tools/mame-patches/megasys1-peekaboo-mcu.patch).
+	// MAME's megasys1_typed_state::mcu_r (umask 0x00ff, upper byte 0).
 	wire [15:0] prot_rd16 = d_mcu ? {8'h00, mcu_prot_rd}
 	                      : is_d  ? pk_rd : {8'h00, prot_rd};
 	always @* begin

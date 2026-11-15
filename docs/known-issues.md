@@ -77,6 +77,7 @@ pixel for pixel.
 | MS1-71 | peekaboo's MO-92033 MCU was dumped but never run; the core simulated MAME's protection_peekaboo handlers | fixed — the TMP91640 runs it (A/D converter added, P3.6 -> IRQ 4, P4 -> OKI bank, P6.0 -> 68000 reset); `.mra` mode byte 0x72 -> 0x12; board-tested |
 | MS1-72 | A CPU held in reset can never park, so no set that holds one could save | fixed — a CPU in reset counts as parked; peekaboo, hayaosi1, monkelf and chimeraba save and load on the board for the first time |
 | MS1-73 | A load restored the 68000s' phi1/phi2 phase onto CPUs that are not in the image | fixed — `phase` / `cpu_ph` no longer restored; 64street's illegal instruction after a load is gone |
+| MS1-74 | MAME upstreamed its own peekaboo MCU hookup and TLCS-90 A/D converter; ours differed in the A/D model | fixed — the A/D follows upstream (190/380-clock conversion, 3-bit channel, INTEH<ADIS> picks INTAD vs timer 2); the test MAME carries upstream's two commits |
 
 ---
 
@@ -121,7 +122,7 @@ as `iosim` — `hayaosi1` and `chimeraba` — are exactly the two whose MCU is
 seen from two directions, and they agree.
 
 **Superseded for peekaboo by MS1-71**: the core now runs the MO-92033, following
-a local MAME patch that hooks it up (`tools/mame-patches/`, not upstream).
+MAME's own hookup (upstream 9cfe0f49e8c, 2026-11-01; MS1-74).
 
 ## MS1-3 — The ROM extractor silently dropped every `BAD_DUMP` part (closed)
 
@@ -3437,8 +3438,8 @@ host watchdog; Timer 1 times the boot handshake. P6.0 is the 68000's reset
 handshake fails or 65 frames pass without a command -- the game reboots), and
 P3.6 is high while a command is handled, its fall raising the 68000's level 4
 ("reply ready"). Those two connections are inferred from the programs, not
-traced on a PCB. The same hookup was written for MAME first
-(`tools/mame-patches/megasys1-peekaboo-mcu.patch`), which is the oracle here.
+traced on a PCB. The same hookup was written for MAME first as a local patch,
+which was the oracle here until MAME upstreamed its own (MS1-74).
 
 **RTL.** `tlcs90_periph_ref.sv` gains the A/D converter (ADREG/ADMOD,
 behind `adc_en`, savestate words 24-25) and read-outs of P3/P6/P67CR.
@@ -3590,3 +3591,50 @@ trace.
 
 After the fix, 64street saved at frame 100 matches in 3 of 3 frames, with
 the monitor exiting normally.
+
+## MS1-74 — Following MAME's upstream Peek-a-Boo! hookup (fixed, measured)
+
+MAME hooked the MO-92033 up itself on 2026-11-01: `1b3d54cd654` ("cpu/tlcs90:
+Preliminary hook up of the ADC") and `9cfe0f49e8c` ("jaleco/megasys1.cpp:
+Hooked up dumped MCU for Peek-A-Boo!"). Its board wiring is the same as
+MS1-71's: 0x100000 write -> P1 + INT0, read -> P2, P3.6 fall -> IRQ 4, P4 ->
+OKI bank, P6.0 -> 68000 reset, INT1 at the start of vblank, paddles on AN0/AN1.
+The other differences make no difference to this program. Upstream starts its
+P3 mirror at `ff`, ours at `0`, but the MCU's first P3 write is `DB` (bit 6
+high), so neither raises a false IRQ 4. Upstream drives INT1 as a level from
+`screen_vblank`, ours as a pulse, but MAME's TLCS-90 takes INT1 on assertion
+either way.
+
+The A/D model is where they differ, and upstream's comes from the datasheet:
+
+| | before | upstream, now |
+|---|---|---|
+| ADMOD bits kept | 7, 2-0 | 4, 2-0 |
+| channel | ADMOD[1:0] | ADMOD[2:0]; AN4 and up read 0 |
+| conversion | 320 clocks | 190 clocks, 380 with bit 4 |
+| INTT2 request | timer 2 OR INTAD | INTEH bit 3 (ADIS) picks one |
+| reset | clears ADREG | ADREG survives |
+
+`tlcs90_periph_ref.sv` now does the same. ADIS is saved in savestate word 25,
+bit 15. Callers with `adc_en` low keep ADIS at 0, so timer 2 is unchanged for
+every other MCU. The MCU only writes ADMOD `88`/`89` and INTEL `10`, which
+leaves INTT2 disabled, so only the conversion time is visible: the vblank
+handler is about 32 us shorter.
+
+The test MAME (`~/mame`) now carries both upstream commits on top of its local
+diagnostic patches. Its tlcs90 and megasys1 files match upstream exactly,
+apart from the sound-isolation patch. `tools/mame-patches/megasys1-peekaboo-mcu.patch`
+is superseded.
+
+**Measured.**
+
+| check | result |
+|---|---|
+| upstream MAME vs our patched MAME, 300 frames | 300 identical (one state snapshot, frame 29, catches a palette write mid-frame) |
+| upstream vs patched, 68000<->MCU, 4M accesses | same 604 commands in the same order, same replies; only the number of polls per reply differs |
+| peekaboo frames vs upstream MAME, core sim | frames 32-119 pixel-exact, 94/120 as before (0-31: boot RAM and the fade-in) |
+| savestate round trips: peekaboo 6 and 45, peekaboou 45, hayaosi1 30, monkelf 30 | all identical |
+| paddles through the A/D, core | P1 30 -> 30, P2 C0 -> C0, P1 02 -> 04 (the MCU's clamp), P2 FE -> FE, as before |
+| service mode, 90 frames, core | frames identical to before; one `fb`, so the watchdog never fired |
+
+Not rebuilt for the board: the change only shortens the conversion.

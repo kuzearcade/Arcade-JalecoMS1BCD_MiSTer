@@ -70,20 +70,18 @@ EXCLUDED = {'edfbl': 'not a System B board (PIC, no sound CPU, banked OKI); MAME
 #   prot:   derived from the MAME machine configuration recorded in the ROM
 #           table, never from the presence of an MCU ROM region.  hayaosi1
 #           ships a dumped TMP91640 that MAME does not run, so region
-#           presence is not evidence that the MCU is live.  system_D is the
-#           one exception to "stock MAME is the authority": stock MAME does
-#           not run peekaboo's MCU either, but tools/mame-patches/
-#           megasys1-peekaboo-mcu.patch hooks it up, and the core follows
-#           that (System D with 'mcu' runs the MO-92033 -- d_mcu in
+#           presence is not evidence that the MCU is live.  system_D has
+#           run peekaboo's MCU in MAME since upstream 9cfe0f49e8c
+#           (2026-11-01), and the core follows that (System D with 'mcu'
+#           runs the MO-92033 -- d_mcu in
 #           rtl/ms1bcd/ms1_main.sv). The 'peekaboo' simulation is still in
 #           the core for .mra files generated before the change.
 #           'mcu'      the TMP91640 runs its dumped ROM
 #           'iosim'    the seven-value command table below
 #           'none'     the bootleg wires the ports straight in
-#           'peekaboo' System D's own handler at 0x100000
-#                      (protection_peekaboo_r/w); system_D instantiates no
-#                      MCU device at all, and its scheme is unrelated to the
-#                      B/C command table.
+#           'peekaboo' System D's old simulated handler at 0x100000
+#                      (MAME's protection_peekaboo_r/w, removed upstream in
+#                      9cfe0f49e8c); unrelated to the B/C command table.
 OKI_4MHZ, OKI_2MHZ = 4_000_000, 2_000_000
 IOSIM_SEQ = {
     # from megasys1.h and the ip_select_w comment block: the command values
@@ -107,7 +105,7 @@ PROT_BY_CFG = {
     'system_B_hayaosi1': 'iosim',     # has an iomcu region; MAME does not run it
     'system_C_iosim':    'iosim',
     'system_B_monkelf':  'none',      # bootleg, ports wired straight in
-    'system_D':          'mcu',       # stock: no MCU device; the local MAME patch runs it
+    'system_D':          'mcu',       # TMP91640 since MAME 9cfe0f49e8c
     'system_Bbl':        'none',      # edfbl, excluded above
 }
 EXTRA = {}

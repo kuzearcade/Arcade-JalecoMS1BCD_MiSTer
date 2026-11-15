@@ -37,8 +37,8 @@
 // of the bank-switched inputs: its paddles come in on the A/D converter
 // (adc_en, an0/an1), and its other outputs are port pins the caller decodes
 // from the read-outs below -- P3 bit 6 is the 68000's IRQ 4, P4 the OKI bank,
-// P6 bit 0 the 68000's reset. See tools/mame-patches/
-// megasys1-peekaboo-mcu.patch for where each of those comes from.
+// P6 bit 0 the 68000's reset -- as in MAME's megasys1_typed_state
+// (upstream 9cfe0f49e8c, "Hooked up dumped MCU for Peek-A-Boo!").
 
 module ms1_iomcu (
 	input             clk,
