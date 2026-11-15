@@ -182,3 +182,8 @@ sim/rtl/*/roms/*.bin
 # tools/gen_autofire_mra.py, never committed or deployed by the release
 # scripts. Regenerate it whenever releases/ changes.
 /autofire_releases/
+
+# Local patches against the MAME reference tree (diagnostic hooks, and the
+# peekaboo MCU hookup). Kept with the project for convenience, not part of
+# its history.
+/tools/mame-patches/
