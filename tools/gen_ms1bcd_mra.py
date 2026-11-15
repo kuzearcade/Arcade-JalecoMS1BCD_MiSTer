@@ -69,8 +69,14 @@ EXCLUDED = {'edfbl': 'not a System B board (PIC, no sound CPU, banked OKI); MAME
 #           48 MHz clk_sys (/12 and /24), so this is a mux, not a PLL.
 #   prot:   derived from the MAME machine configuration recorded in the ROM
 #           table, never from the presence of an MCU ROM region.  hayaosi1
-#           and peekaboo both ship a dumped TMP91640 that MAME does not run,
-#           so region presence is not evidence that the MCU is live.
+#           ships a dumped TMP91640 that MAME does not run, so region
+#           presence is not evidence that the MCU is live.  system_D is the
+#           one exception to "stock MAME is the authority": stock MAME does
+#           not run peekaboo's MCU either, but tools/mame-patches/
+#           megasys1-peekaboo-mcu.patch hooks it up, and the core follows
+#           that (System D with 'mcu' runs the MO-92033 -- d_mcu in
+#           rtl/ms1bcd/ms1_main.sv). The 'peekaboo' simulation is still in
+#           the core for .mra files generated before the change.
 #           'mcu'      the TMP91640 runs its dumped ROM
 #           'iosim'    the seven-value command table below
 #           'none'     the bootleg wires the ports straight in
@@ -101,7 +107,7 @@ PROT_BY_CFG = {
     'system_B_hayaosi1': 'iosim',     # has an iomcu region; MAME does not run it
     'system_C_iosim':    'iosim',
     'system_B_monkelf':  'none',      # bootleg, ports wired straight in
-    'system_D':          'peekaboo',  # has an mcu region; system_D has no MCU device
+    'system_D':          'mcu',       # stock: no MCU device; the local MAME patch runs it
     'system_Bbl':        'none',      # edfbl, excluded above
 }
 EXTRA = {}

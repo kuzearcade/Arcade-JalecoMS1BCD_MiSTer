@@ -132,9 +132,10 @@ module ms1_sound (
 		enPhi1 <= 1'b0; enPhi2 <= 1'b0;
 		if (reset) begin cpu_acc <= 27'd0; cpu_ph <= 1'b0; end
 		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd6)) cpu_acc[15:0] <= ss_wdata;
-		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd7)) begin
-			cpu_ph <= ss_wdata[11]; cpu_acc[26:16] <= ss_wdata[10:0];
-		end
+		// cpu_ph is not restored, for the reason given at `phase` in
+		// ms1_main.sv (MS1-73): the sound 68000 is live in its park monitor,
+		// not in the image, and only it knows which enable it needs next.
+		else if (ss_w & ss_smisc & (ss_addr[3:0] == 4'd7)) cpu_acc[26:16] <= ss_wdata[10:0];
 		else if (ss_active) begin enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else begin
 			// two edges per CPU cycle
@@ -510,9 +511,20 @@ module ms1_sound (
 	wire  [2:0] ipl_park;
 	wire        sel_mon;
 	wire [15:0] mon_data, ss_spark_rdata;
+	// MS1-72: a CPU held in reset cannot run the monitor, and before this
+	// every save on System D (where the sound 68000 is held in reset for
+	// good) timed out waiting for it. In reset it has no register state
+	// worth keeping -- it restarts from its vectors when released, and
+	// whatever holds it in reset is itself in the image -- so it counts as
+	// parked for as long as the engine is not resuming. Dropping it with
+	// ss_resume lets S_RELWAIT finish at once. The monitor is reset with
+	// the CPU so a park interrupted by a sound reset cannot leave `parked`
+	// stuck high.
+	wire spark_parked;
+	assign ss_parked = spark_parked | (ss_freeze & ~ss_resume & cpu_rst);
 	ss_m68k_park #(.MON_BASE(15'h100)) u_spark (
-		.clk(clk), .reset(reset), .phi(enPhi2),
-		.park_req(ss_freeze), .parked(ss_parked), .resume(ss_resume),
+		.clk(clk), .reset(cpu_rst), .phi(enPhi2),
+		.park_req(ss_freeze), .parked(spark_parked), .resume(ss_resume),
 		.eab(eab), .ASn(ASn), .eRWn(eRWn), .FC0(FC0), .FC1(FC1), .FC2(FC2),
 		.oEdb(oEdb),
 		.ipl_park(ipl_park), .sel_mon(sel_mon), .mon_data(mon_data),

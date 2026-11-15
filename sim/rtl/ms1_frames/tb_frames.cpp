@@ -206,8 +206,17 @@ int main(int argc, char **argv) {
 			return top->ss_frozen != 0;
 		};
 		auto release = [&]() {
+			// MS1-72: hold ss_freeze until every 68000 has LEFT its park
+			// monitor, as savestate.sv's S_RELWAIT does (`~ss_parked`).
+			// Dropping it after a fixed 64 ticks pulled the monitor's bus
+			// overlay out from under a CPU still polling RESUME: it read
+			// 0x0000 instead of its own code and ran on into unmapped space.
+			// Most sets got there in time by luck of their bus timing;
+			// chimeraba did not, and crashed on an ILLEGAL INSTRUCTION.
 			top->ss_resume = 1;
 			for (int i = 0; i < 64; i++) tick();
+			{ long g = 0; while (top->ss_parked && g++ < 4000000) tick(); }
+			if (top->ss_parked) printf("  WARN: a CPU never left its park monitor\n");
 			top->ss_freeze = 0;
 			for (int i = 0; i < 64; i++) tick();
 			top->ss_resume = 0;

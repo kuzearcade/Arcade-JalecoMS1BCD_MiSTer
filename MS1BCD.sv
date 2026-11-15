@@ -539,8 +539,9 @@ wire [7:0] h_sys = ~{p2_coin | kb_coin2, p1_coin | kb_coin1, kb_service,
 // --- peekaboo: P1 and P2 are 8-bit PADDLES, not joysticks, clamped to the
 //     range MAME's PORT_MINMAX gives them. They are ACTIVE HIGH -- an analog
 //     value, not a switch -- so unlike every other port here they are not
-//     inverted, and they are read through System D's own protection port
-//     (commands 0x51 and 0x52) rather than the I/O MCU's mux.
+//     inverted. The 68000 asks for them on System D's protection port
+//     (commands 0x51 and 0x52): the MO-92033 MCU samples them on its A/D
+//     converter (MS1-71), or the prot-3 simulation returns them directly.
 //
 //     SYSTEM is a 16-BIT port on this board. The low half is the four coin
 //     inputs and the two starts, as elsewhere; the HIGH half carries the six

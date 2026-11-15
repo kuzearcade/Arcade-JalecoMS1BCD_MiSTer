@@ -103,6 +103,21 @@
 //     write tap, since P3/P7 keep functioning as plain port latches
 //     otherwise; unlike P6, nothing here needs to *change* what a plain
 //     read returns).
+//   - **A/D converter** (`adc_en`, `an0`-`an3`, ADREG 0xFFEE / ADMOD
+//     0xFFEF): added for the Jaleco MO-92033 (Peek-a-Boo!, System D),
+//     whose MCU reads both paddles through it. MAME's own core leaves
+//     these registers unmapped; tools/mame-patches/
+//     megasys1-peekaboo-mcu.patch adds them, and this follows that model
+//     exactly: writing ADMOD with bit 3 (ADS) set clears EOCF (bit 6),
+//     sets ADBF (bit 5) and starts a 320-clock conversion of input
+//     ADMOD[1:0]; at the end ADREG takes the input, ADBF clears, EOCF
+//     sets and INTAD is raised on the INTT2 slot (masked by DET2).
+//     Reading ADREG clears EOCF. With adc_en low both registers read 0
+//     and nothing runs, which is every prior caller's behaviour.
+//   - **P3/P6/P67CR read-outs** (`p3_q`, `p6_q`, `p67cr_q`): the latches
+//     themselves, for a caller that has to know a pin's current level
+//     rather than catch the write (System D's 68000 reset is P6 bit 0,
+//     floating high while P67CR leaves it an input).
 module nmk004_periph (
 	input        clk,
 	input        cen,   // clock enable, same contract as tlcs90.sv's own (tie 1'b1 for a real divided clk)
@@ -158,6 +173,14 @@ module nmk004_periph (
 	output       p7_we,
 	output [7:0] p7_wdata,
 
+	// A/D converter and port read-outs -- see header. Tie adc_en low to
+	// keep every prior behaviour exactly.
+	input        adc_en,
+	input  [7:0] an0, an1, an2, an3,
+	output [7:0] p3_q,
+	output [7:0] p6_q,
+	output [7:0] p67cr_q,
+
 	// Savestates (2026-09-18): every register above is readable as one of
 	// 24 16-bit words at any time, and writable one word per clk (ss_wr
 	// is a clk pulse, NOT cen-gated, and takes priority over the normal
@@ -168,7 +191,8 @@ module nmk004_periph (
 	// 7 {bx_r,by_r} 8 {tmod,tclk} 9 {trun,5'b0,base_div} 10 {treg0,treg1}
 	// 11 {treg2,treg3} 12 {tval0,tval1} 13 {tval2,tval3} 14..17 presc0..3
 	// 18 treg4 19 treg5 20 tval4 21 presc4 22 {5'b0,irq_mask}
-	// 23 {10'b0,fired5,fired4,fired3,fired2,fired1,fired0}.
+	// 23 {10'b0,fired5,fired4,fired3,fired2,fired1,fired0}
+	// 24 {admod,adreg} 25 {7'b0,ad_cnt}.
 	input        ss_wr,
 	input  [4:0] ss_sel,
 	input [15:0] ss_wdata,
@@ -182,6 +206,13 @@ module nmk004_periph (
 	reg [7:0] p01cr, p2cr, p4cr, p67cr, p8cr;
 	reg [7:0] smmod;
 	assign p4_latch = p4;
+	assign p3_q     = p3;
+	assign p6_q     = p6;
+	assign p67cr_q  = p67cr;
+	// A/D converter state (see the A/D block near the end)
+	reg [7:0] admod, adreg;
+	reg [8:0] ad_cnt;       // clocks left in the conversion, 0 = idle
+	reg       ad_done;      // one-cen INTAD pulse
 	assign bx = bx_r[3:0];
 	assign by = by_r[3:0];
 	reg [7:0] bx_r, by_r;
@@ -421,7 +452,7 @@ module nmk004_periph (
 		irq_req_r = 11'd0;
 		irq_req_r[1] = fired0; // T0
 		irq_req_r[2] = fired1; // T1
-		irq_req_r[3] = fired2; // T2
+		irq_req_r[3] = fired2 | ad_done; // T2, shared with INTAD
 		irq_req_r[4] = fired3; // T3
 		irq_req_r[5] = fired4; // T4
 		irq_req_r[7] = fired5; // T5
@@ -458,6 +489,8 @@ module nmk004_periph (
 			6'h24: rdata = t4mod;
 			6'h2c: rdata = 8'hf0 | {4'h0, bx_r[3:0]};
 			6'h2d: rdata = 8'hf0 | {4'h0, by_r[3:0]};
+			6'h2e: rdata = adc_en ? adreg : 8'h00;
+			6'h2f: rdata = adc_en ? admod : 8'h00;
 			default: rdata = 8'h00; // reserved_r()
 		endcase
 	end
@@ -511,6 +544,8 @@ module nmk004_periph (
 			5'd21: ss_rdata = presc4;
 			5'd22: ss_rdata = {5'b0, irq_mask_r};
 			5'd23: ss_rdata = {10'b0, fired5, fired4, fired3, fired2, fired1, fired0};
+			5'd24: ss_rdata = {admod, adreg};
+			5'd25: ss_rdata = {7'b0, ad_cnt};
 			default: ss_rdata = 16'h0000;
 		endcase
 	end
@@ -587,6 +622,43 @@ module nmk004_periph (
 				6'h2d: by_r <= wdata;
 				default: ; // reserved_w() / write-only or read-only regs written elsewhere
 			endcase
+		end
+	end
+
+	// ------------------------------------------------------------------
+	// A/D converter -- see header. One owner for admod/adreg/ad_cnt:
+	// the savestate write takes priority, as everywhere else in here.
+	// ------------------------------------------------------------------
+	wire [7:0] an_sel = (admod[1:0] == 2'd0) ? an0 : (admod[1:0] == 2'd1) ? an1
+	                  : (admod[1:0] == 2'd2) ? an2 : an3;
+	always @(posedge clk) if (ss_wr) begin
+		case (ss_sel)
+			5'd24: {admod, adreg} <= ss_wdata;
+			5'd25: ad_cnt <= ss_wdata[8:0];
+			default: ;
+		endcase
+	end else if (cen) begin
+		ad_done <= 1'b0;
+		if (reset | ~adc_en) begin
+			admod <= 8'h00; adreg <= 8'h00; ad_cnt <= 9'd0;
+		end else begin
+			if (ad_cnt != 9'd0) begin
+				ad_cnt <= ad_cnt - 9'd1;
+				if (ad_cnt == 9'd1) begin
+					adreg   <= an_sel;
+					admod   <= (admod & 8'hDF) | 8'h40;   // ADBF clear, EOCF set
+					ad_done <= 1'b1;
+				end
+			end
+			if (we && reg_addr == 6'h2f) begin
+				if (wdata[3]) begin
+					admod  <= (wdata & 8'h87) | 8'h20;      // EOCF clear, ADBF set
+					ad_cnt <= 9'd320;
+				end else
+					admod  <= (admod & 8'h60) | (wdata & 8'h87);
+			end
+			else if (re && reg_addr == 6'h2e)
+				admod <= admod & 8'hBF;                   // reading ADREG clears EOCF
 		end
 	end
 

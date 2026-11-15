@@ -73,7 +73,9 @@ module ms1_main (
 	input               reset,
 	input        [1:0]  mode,          // 0 = B, 1 = C
 	// Protection, from the .mra's game-mode byte bits 6:5:
-	//   0 real MCU, 1 simulated (iosim), 2 none, 3 System D's own.
+	//   0 real MCU, 1 simulated (iosim), 2 none, 3 System D's own
+	//   simulation (MAME's protection_peekaboo_r/w). System D with 0 runs
+	//   its dumped MO-92033 instead -- see d_mcu below.
 	input        [1:0]  prot,
 
 	// program ROM, served by the caller (512 KB, word addressed)
@@ -210,7 +212,16 @@ module ms1_main (
 	always @(posedge clk) begin
 		if (reset) begin phdiv <= 3'd0; phase <= 1'b0; enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd4)) phdiv <= ss_wdata[2:0];
-		else if (ss_w & ss_misc & (ss_addr[3:0] == 4'd5)) phase <= ss_wdata[1];
+		// `phase` is NOT restored (MS1-73). It says which enable comes next,
+		// and that belongs to the CPU that is actually running -- fx68k is
+		// not in the image, it is sitting in the park monitor wherever it
+		// was when the load froze it, usually mid-way through a different
+		// bus cycle from the one in the save. Writing the saved phase back
+		// gave it two phi1s (or two phi2s) in a row: on 64street it then
+		// decoded the monitor's own `move.l SSP_REG,a7` as an illegal
+		// instruction. Restoring `phdiv` only moves the next edge, never
+		// its kind, so that one stays. The image field is kept so the
+		// layout does not change.
 		else if (ss_active) begin enPhi1 <= 1'b0; enPhi2 <= 1'b0; end
 		else begin
 			enPhi1 <= 1'b0; enPhi2 <= 1'b0;
@@ -237,6 +248,13 @@ module ms1_main (
 	wire is_b = (mode == 2'd0);
 	wire is_c = (mode == 2'd1);
 	wire is_d = (mode == 2'd2);
+	// System D running its real TMP91640 (MO-92033) rather than the
+	// protection_peekaboo simulation. Everything that differs between the
+	// two is keyed on this, so prot 3 behaves exactly as it always has.
+	wire d_mcu = is_d & (prot == 2'd0);
+	// its pins, from the MCU's port latches (u_mcu, further down)
+	wire       mcu_p3_we;
+	wire [7:0] mcu_p3_wdata, mcu_p3_q, mcu_p4_q, mcu_p6_q, mcu_p67cr_q;
 
 	// ---- simulated protection (prot == 1): state and the per-game command
 	// table. The responder itself is further down, with the rest of the
@@ -778,7 +796,10 @@ module ms1_main (
 	                   : (prot == 2'd0) ? mcu_prot_rd : 8'h00;
 	// System D's port is a full word (see pk_rd, below); B and C's is a byte
 	// in the low half.
-	wire [15:0] prot_rd16 = is_d ? pk_rd : {8'h00, prot_rd};
+	// With the MCU, D's word read is the MCU's port 2 in the low byte, as in
+	// MAME's mcu_r (tools/mame-patches/megasys1-peekaboo-mcu.patch).
+	wire [15:0] prot_rd16 = d_mcu ? {8'h00, mcu_prot_rd}
+	                      : is_d  ? pk_rd : {8'h00, prot_rd};
 	always @* begin
 		if      (sel_mon)  rdat = mon_data;   // the park monitor's overlay
 		else if (sel_rom)  rdat = rom_data;
@@ -833,11 +854,15 @@ module ms1_main (
 	// the MCU is held in reset, but naming the condition costs nothing and
 	// keeps mode D from depending on that.
 	wire prot_irq2 = (prot == 2'd1) ? io_irq2
-	               : (prot == 2'd0) ? mcu_irq2 : 1'b0;
+	               : (prot == 2'd0 && !is_d) ? mcu_irq2 : 1'b0;
 	wire [3:0] mcu_dbg_bank;
 	wire mcu_dbg_rd;
 	// INT1 is display enable: high over the visible rows (MS1-19)
 	wire int1 = (vcount >= 9'd16) && (vcount < 9'd240);
+	// System D's MCU takes INT1 at the START of vblank instead, the same
+	// moment the 68000 gets its level 2 (megasys1D_irq pulses both). Its
+	// handler samples the paddles and counts frames for its host watchdog.
+	wire int1_mcu = d_mcu ? (vcount >= 9'd240) : int1;
 
 	reg prot_we_pulse;
 	always @(posedge clk)
@@ -927,6 +952,7 @@ module ms1_main (
 	// a 1 MB sample ROM. ms1_sound folds that in.
 	wire [15:0] pk_next = {(~UDSn) ? wdat[15:8] : pk_latch[15:8],
 	                       (~LDSn) ? wdat[7:0]  : pk_latch[7:0]};
+	wire pk_sim = is_d & (prot == 2'd3);
 	always @(posedge clk) begin
 		pk_irq4 <= 1'b0;
 		oki_we  <= 1'b0;
@@ -942,11 +968,15 @@ module ms1_main (
 			oki_bank <= ss_wdata[2:0]; oki_wdata <= ss_wdata[15:8];
 		end
 		else begin
-			if (is_d & prot_we_edge) begin
+			if (pk_sim & prot_we_edge) begin
 				pk_latch <= pk_next;
 				if ((pk_next[7:0] & 8'h90) == 8'h90) oki_bank <= pk_next[2:0];
 				pk_irq4  <= 1'b1;
 			end
+			// With the MCU the bank is its port 4 (command 9x), followed
+			// continuously so a savestate restore of the MCU's ports puts the
+			// bank back too.
+			if (d_mcu) oki_bank <= mcu_p4_q[2:0];
 			// 0F8001 is an ODD byte address: the chip is on the LOW data
 			// lane and the access is an LDS one. A word write hits it too,
 			// which is why this keys on the strobe rather than on a[0].
@@ -960,14 +990,33 @@ module ms1_main (
 		if (ss_w & ss_misc & (ss_addr[3:0] == 4'd2)) oki_we_d <= ss_wdata[3];
 		else oki_we_d <= we & d_oki;
 
+	// ---- System D's MCU pins (d_mcu only)
+	//
+	// P3 bit 6 is high while the MCU handles a command and drops once the
+	// reply is on port 2; that falling edge is the 68000's level 4, whose
+	// handler only sets the "reply ready" flag the game waits on.
+	//
+	// P6 bit 0 is the 68000's reset. Out of reset the MCU's ports are
+	// inputs and the line floats high (asserted); the program drives it high
+	// while it initialises, low once it accepts commands, and high again if
+	// the boot handshake fails or 65 frames pass with no command -- which
+	// reboots the game. Derived from the port latches rather than kept as
+	// its own state, so a savestate cannot disagree with the MCU about it.
+	wire       mcu_irq4 = d_mcu & mcu_p3_we & mcu_p3_q[6] & ~mcu_p3_wdata[6];
+	wire       mcu_reset = reset | ss_rst_dbg[0] | (prot != 2'd0);
+	wire       m68k_hold = d_mcu & (mcu_reset | ~mcu_p67cr_q[0] | mcu_p6_q[0]);
+
 	ms1_iomcu u_mcu (
 		// Held in reset unless it IS the protection: on an iosim or a
 		// bootleg set the .mra ships a zero-filled MCU region, and 0x00 is
 		// NOP, so letting it run just burns cycles and answers nothing.
-		.clk(clk), .cen(mcu_cen_tick), .reset(reset | ss_rst_dbg[0] | (prot != 2'd0)),
+		.clk(clk), .cen(mcu_cen_tick), .reset(mcu_reset),
 		.host_we(prot_we_edge), .host_data(oEdb[7:0]),
 		.mcu_data(mcu_prot_rd), .main_irq2(mcu_irq2),
-		.int1(int1),
+		.int1(int1_mcu),
+		.adc_en(d_mcu), .an0(in_p1), .an1(in_p2),
+		.p3_we(mcu_p3_we), .p3_wdata(mcu_p3_wdata),
+		.p3_q(mcu_p3_q), .p4_q(mcu_p4_q), .p6_q(mcu_p6_q), .p67cr_q(mcu_p67cr_q),
 		.in_p1(in_p1), .in_p2(in_p2), .in_dsw1(in_dsw1),
 		.in_dsw2(in_dsw2), .in_system(in_system),
 				.rom_addr(mcu_rom_addr), .rom_data(mcu_rom_data), .rom_ready(mcu_rom_ready),
@@ -1046,7 +1095,7 @@ module ms1_main (
 			if (vtick && vcount == 9'd240)
 				if (is_d) irq2_h <= 1'b1; else irq4_h <= 1'b1;
 			if (prot_irq2)                 irq2_h <= 1'b1;
-			if (pk_irq4)                   irq4_h <= 1'b1;
+			if (pk_irq4 | mcu_irq4)        irq4_h <= 1'b1;
 			// MS1-23 says one acknowledge CYCLE retires exactly one interrupt.
 			// It must also retire one of the GAME's interrupts only. The
 			// savestate park raises level 7 and is acknowledged like any
@@ -1069,9 +1118,16 @@ module ms1_main (
 	wire [2:0] ipl_park;
 	wire       sel_mon;
 	wire [15:0] mon_data;
+	// MS1-72: while System D's MCU holds the 68000 in reset (its first
+	// moments after power-up, or the reboot after its watchdog fires) the
+	// 68000 cannot run the monitor. It counts as parked then, the same way
+	// the sound 68000 does in ms1_sound.sv: it restarts from its vectors
+	// when released, and the MCU state that releases it is in the image.
+	wire m68k_park_done;
+	assign ss_m68k_parked = m68k_park_done | (ss_freeze & ~ss_resume & m68k_hold);
 	ss_m68k_park #(.MON_BASE(15'h600)) u_park (
-		.clk(clk), .reset(reset), .phi(enPhi2),
-		.park_req(ss_freeze), .parked(ss_m68k_parked), .resume(ss_resume),
+		.clk(clk), .reset(reset | m68k_hold), .phi(enPhi2),
+		.park_req(ss_freeze), .parked(m68k_park_done), .resume(ss_resume),
 		.eab(eab), .ASn(ASn), .eRWn(eRWn), .FC0(FC0), .FC1(FC1), .FC2(FC2),
 		.oEdb(oEdb),
 		.ipl_park(ipl_park), .sel_mon(sel_mon), .mon_data(mon_data),
@@ -1110,7 +1166,9 @@ module ms1_main (
 	end
 
 	fx68k u_cpu (
-		.clk(clk), .HALTn(1'b1), .extReset(reset), .pwrUp(reset),
+		// System D's MCU can hold the 68000 in reset (m68k_hold, above);
+		// pwrUp stays the board's own reset.
+		.clk(clk), .HALTn(1'b1), .extReset(reset | m68k_hold), .pwrUp(reset),
 		.enPhi1(enPhi1 & ~pause_68k), .enPhi2(enPhi2 & ~pause_68k),
 		.eRWn(eRWn), .ASn(ASn), .LDSn(LDSn), .UDSn(UDSn), .E(), .VMAn(VMAn),
 		.FC0(FC0), .FC1(FC1), .FC2(FC2), .BGn(BGn),

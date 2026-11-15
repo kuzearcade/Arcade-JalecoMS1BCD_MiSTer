@@ -32,6 +32,13 @@
 // So the whole conversation is visible from the 68000 bus alone, which is
 // what makes it checkable command by command against a MAME trace rather
 // than by "the game boots" (docs/PLAN.md M2 gate 5).
+//
+// System D (Peek-a-Boo!, MO-92033) uses the same latches and INT0, but none
+// of the bank-switched inputs: its paddles come in on the A/D converter
+// (adc_en, an0/an1), and its other outputs are port pins the caller decodes
+// from the read-outs below -- P3 bit 6 is the 68000's IRQ 4, P4 the OKI bank,
+// P6 bit 0 the 68000's reset. See tools/mame-patches/
+// megasys1-peekaboo-mcu.patch for where each of those comes from.
 
 module ms1_iomcu (
 	input             clk,
@@ -50,6 +57,13 @@ module ms1_iomcu (
 	input             int1,
 	output reg  [7:0] mcu_data,     // what the main CPU reads back
 	output reg        main_irq2,    // pulse: MCU asked for IRQ 2 (bank 7)
+
+	// ---- System D: the A/D converter and the port pins it drives
+	input             adc_en,
+	input       [7:0] an0, an1,
+	output            p3_we,
+	output      [7:0] p3_wdata,
+	output      [7:0] p3_q, p4_q, p6_q, p67cr_q,
 
 	// ---- board inputs, active-low as the ports read them
 	input       [7:0] in_p1,
@@ -219,13 +233,19 @@ module ms1_iomcu (
 		iram_q_hi <= iram[{ss_addr[7:0], 1'b1}];
 	end
 
+	// MS1-72: held in reset (every set whose protection is not this MCU) it
+	// never reaches an instruction boundary, so it counts as frozen: it has
+	// no state to keep, and it is still in reset after a load.
+	wire cpu_frozen;
+	assign ss_frozen = cpu_frozen | (ss_freeze & reset);
+
 	tlcs90 u_cpu (
 		.clk(clk), .cen(cen_eff), .reset(reset),
 		.din(din), .dout(dout), .addr(addr), .addr_bank(addr_bank),
 		.mem_rd(mem_rd), .mem_wr(mem_wr),
 		.nmi(1'b0), .irq_req(irq_req), .irq_mask(irq_mask), .irq_clr(irq_clr),
 		.ix_bank(bx), .iy_bank(by),
-		.ss_freeze(ss_freeze), .ss_frozen(ss_frozen),
+		.ss_freeze(ss_freeze), .ss_frozen(cpu_frozen),
 		.ss_sel(ss_addr[4:0]), .ss_wr(ss_w & ss_cpu), .ss_wdata(ss_wdata),
 		.ss_rdata(ss_cpu_rdata),
 		.dbg_pc(dbg_mcu_pc), .dbg_valid(), .dbg_halt(dbg_mcu_halt),
@@ -239,12 +259,16 @@ module ms1_iomcu (
 		.we(cen_eff & mem_wr & sel_preg), .re(cen_eff & mem_rd & sel_preg),
 		.rdata(preg_rdata),
 		.irq_mask(irq_mask), .irq_req(irq_req_p), .irq_clr(irq_clr),
-		.p4_latch(), .bx(bx), .by(by),
+		.p4_latch(p4_q), .bx(bx), .by(by),
 		.p5_ext_en(1'b0), .p5_ext_val(8'h00),
 		.p6_ext_en(1'b0), .p6_ext_val(8'h00),
 		.p6_we(), .p6_wdata(),
 		.p1_ext_en(1'b1), .p1_ext_val(to_mcu),
 		.p2_we(p2_we), .p2_wdata(p2_wdata),
+		.p7_ext_en(1'b0), .p7_ext_val(8'h00),
+		.p3_we(p3_we), .p3_wdata(p3_wdata), .p7_we(), .p7_wdata(),
+		.adc_en(adc_en), .an0(an0), .an1(an1), .an2(8'h00), .an3(8'h00),
+		.p3_q(p3_q), .p6_q(p6_q), .p67cr_q(p67cr_q),
 		.ss_wr(ss_w & ss_prg), .ss_sel(ss_addr[4:0]), .ss_wdata(ss_wdata),
 		.ss_rdata(ss_prg_rdata)
 	);

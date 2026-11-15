@@ -5,7 +5,7 @@ records what was measured, how, and what is still unknown. An entry is only
 closed by a measurement, never by reasoning.
 
 **Four are open**: two from M0 answerable off-board, MS1-31 which needs the
-board, and MS1-33 from M3. MS1-32 closed as a misdiagnosis of MS1-57; MS1-60
+board, and MS1-33 from M3 (since closed as a harness artifact, MS1-72). MS1-32 closed as a misdiagnosis of MS1-57; MS1-60
 fixed, with the budget measured but the symptom itself still not demonstrated
 pixel for pixel.
 
@@ -43,7 +43,7 @@ pixel for pixel.
 | MS1-30 | `screen_flag` bit 4 is a reset line over the whole sound subsystem | closed |
 | MS1-31 | Matching MAME's OKI status means matching a hack MAME admits to | **OPEN** — only real hardware can settle it |
 | MS1-32 | A tile-fetch lookahead trades fidelity for cache tolerance | closed — misdiagnosed; it is MS1-57's wrap, and the lookahead is faithful once that is fixed |
-| MS1-33 | A savestate round trip leaves one counter digit behind | **OPEN** — bounded at 25 pixels, cause not yet named |
+| MS1-33 | A savestate round trip leaves one counter digit behind | closed — the sim harness released the park after 64 ticks and pulled the monitor out from under the CPU (MS1-72); the core never had it |
 | MS1-34 | A restore written in its own always block does nothing, silently | closed |
 | MS1-35 | A probe that parks the CPU to look at it measures itself | closed |
 | MS1-36 | Resetting the sound subsystem changes main-CPU behaviour | closed — the savestate park handshake, not a datapath |
@@ -74,6 +74,9 @@ pixel for pixel.
 | MS1-63 | High scores never restored (issue #2): back-door byte writes stored whole words, a file check discarded real saves, E.D.F.'s table overflowed the capture buffer | fixed — work RAM split into byte-lane arrays, the check removed, capture 512 bytes; 12/12 sets save and restore on the board |
 | MS1-64 | The OKIs (B and C's effects) sat 12 dB under MAME (issue #3) | fixed — jt6295 put on MAME's scale (<<4); mix within 0.4 dB of MAME in sim, FM and OKI each within 0.5 dB; System D left at its released level |
 | MS1-65 | Peek-a-Boo's buttons 3 and 4 are each player's Right in Buttons mode, not "stage clear"/"option" (issue #1) | fixed — Fire/Left/Right on each player's own pad; P2's Right moved from pad 1's fourth button to pad 2's third; board-tested |
+| MS1-71 | peekaboo's MO-92033 MCU was dumped but never run; the core simulated MAME's protection_peekaboo handlers | fixed — the TMP91640 runs it (A/D converter added, P3.6 -> IRQ 4, P4 -> OKI bank, P6.0 -> 68000 reset); `.mra` mode byte 0x72 -> 0x12; board-tested |
+| MS1-72 | A CPU held in reset can never park, so no set that holds one could save | fixed — a CPU in reset counts as parked; peekaboo, hayaosi1, monkelf and chimeraba save and load on the board for the first time |
+| MS1-73 | A load restored the 68000s' phi1/phi2 phase onto CPUs that are not in the image | fixed — `phase` / `cpu_ph` no longer restored; 64street's illegal instruction after a load is gone |
 
 ---
 
@@ -116,6 +119,9 @@ The derivation is independently corroborated: the only two sets that come out
 as `iosim` — `hayaosi1` and `chimeraba` — are exactly the two whose MCU is
 `NO_DUMP`. A simulated protection path and an undumped MCU are the same fact
 seen from two directions, and they agree.
+
+**Superseded for peekaboo by MS1-71**: the core now runs the MO-92033, following
+a local MAME patch that hooks it up (`tools/mame-patches/`, not upstream).
 
 ## MS1-3 — The ROM extractor silently dropped every `BAD_DUMP` part (closed)
 
@@ -928,7 +934,14 @@ Measured at N=8: zero fetch misses across 3.44 M displayed pixels, 58 of 60
 frames identical to the reference, the 2 that differ being 98 pixels each and
 all at x < 8.
 
-## MS1-33 — A savestate round trip leaves one counter digit behind (open)
+## MS1-33 — A savestate round trip leaves one counter digit behind (closed)
+
+**Closed by MS1-72**: the residue was the sim harness dropping `ss_freeze` 64
+ticks after `ss_resume`, before the 68000 had left its park monitor. With
+`release()` waiting for `~ss_parked`, as the engine does, the RTL at
+`851e531` gives 0 differing pixels on avspirit saved at frame 100, the case
+whose 4741-lit-pixel frame this entry describes. The
+history below is kept as it was written.
 
 Save the core at a frame boundary, run 8 frames, restore, run the same 8
 frames, compare. Frames 0, 1 and 2 are pixel-identical. Frame 3 differs in 497
@@ -3410,3 +3423,170 @@ Avenging Spirit 0.985 / 0.983 (two runs) -> 0.976, level +0.2 -> +0.4 dB,
 RMS unchanged. In 20 s windows the change is in the demo-play stretches,
 which also differ between the two old-build runs (0.58 / 0.39); the stable
 windows move by 0.01-0.02, the mono analysis of the stereo windows.
+
+## MS1-71 — peekaboo runs its own MCU (closed, measured)
+
+`mo-92033.mcu.ic120` is a real dump that stock MAME never runs (MS1-2); the
+core simulated `protection_peekaboo_r/w` instead. The MCU program is ~0x200
+bytes, disassembled in full: INT0 takes a command from P1 and answers on P2
+(`fb` handshake, `51`/`52` paddles, `9x` OKI bank on P4, `6x`/`7x`/`8x`/`ax`
+to P0/P3.2/P3.5/P7 with unknown function, anything else `03`); INT1 (vblank)
+samples both paddles on the **on-chip A/D converter** and counts frames for a
+host watchdog; Timer 1 times the boot handshake. P6.0 is the 68000's reset
+(high through the MCU's init, low once it takes commands, high again when the
+handshake fails or 65 frames pass without a command -- the game reboots), and
+P3.6 is high while a command is handled, its fall raising the 68000's level 4
+("reply ready"). Those two connections are inferred from the programs, not
+traced on a PCB. The same hookup was written for MAME first
+(`tools/mame-patches/megasys1-peekaboo-mcu.patch`), which is the oracle here.
+
+**RTL.** `tlcs90_periph_ref.sv` gains the A/D converter (ADREG/ADMOD,
+behind `adc_en`, savestate words 24-25) and read-outs of P3/P6/P67CR.
+`ms1_main.sv` keys everything on `d_mcu` (mode D with prot 0): the port reads
+P2, INT1 is the start of vblank, P4 drives the OKI bank, P3.6's fall raises
+IRQ 4, and `m68k_hold = ~P67CR[0] | P6[0]` -- a port pin left as an input
+floats high -- holds the 68000's `extReset`, so it needs no state of its own.
+The generator maps `system_D` to `mcu`: the mode byte goes 0x72 -> 0x12.
+Prot 3 is still decoded, so an older `.mra` keeps the simulation.
+
+**Measured.**
+
+| check | result |
+|---|---|
+| patched MAME vs stock MAME, 300 frames | 299 identical |
+| 68000<->MCU conversation, RTL vs patched MAME | all 478 commands identical; reads differ only in how many polls see the previous reply |
+| peekaboo frames vs patched MAME, reference sim | frames 32-119 pixel-exact (0-31: MAME's boot RAM and the fade-in) |
+| avspirit 80, 64street 80, peekaboo-prot-3 50 frames, before vs after | bit-identical |
+| paddles through the A/D | P1 30 -> 30, P2 C0 -> C0, P1 02 -> 04 (the MCU's own clamp), P2 FE -> FE |
+| service mode, 90 frames | test screen; one `fb`, so the watchdog never fired |
+| build | 70 % ALMs, 544/553 M10K (unchanged), setup +0.549 / hold +0.237 ns |
+| board, both sets | boot, attract, coin, start, play |
+
+The paddle could not be moved on the board from a virtual keyboard
+(`paddle_0` needs a paddle device), so the A/D path is measured in sim only.
+Savestates on System D did not park at all, before or after this change:
+fixed by MS1-72.
+
+## MS1-72 — A CPU held in reset can never park (fixed)
+
+`ss_frozen` is the AND of three "parked" signals, and two of them could not
+assert for a CPU held in reset:
+
+- the TLCS-90's `ss_frozen` is `ss_freeze && at_boundary && !reset`;
+- a 68000's park runs a monitor routine, which a CPU in reset never fetches.
+
+Four shipped sets hold one of them in reset for good, so every save on them
+timed out in `S_FREEZE` and was dropped:
+
+| set | held in reset |
+|---|---|
+| peekaboo, peekaboou | the sound 68000 (`cpu_rst = snd_rst \| is_d`; System D has none) |
+| hayaosi1, chimeraba (iosim) | the TMP91640 (`prot != 0`) |
+| monkelf (no protection) | the TMP91640 |
+
+None of them had ever written a `.ss` on the board. In sim, the RTL at
+`851e531` fails all of these with "the core never parked"; avspirit with its
+MCU switched off (`MS1_PROT=2`) fails the same way, which is the minimal form.
+
+A CPU in reset has nothing to save: it restarts from its vectors when it is
+released, and whatever holds it there (the mode byte, `screen_flag`, the
+peekaboo MCU's P6.0) is itself in the image. So it now counts as parked:
+
+- `ms1_iomcu.sv`: `ss_frozen = cpu_frozen | (ss_freeze & reset)`.
+- `ms1_sound.sv`: `ss_parked = spark_parked | (ss_freeze & ~ss_resume &
+  cpu_rst)`, and the park module is reset with the CPU, so a sound reset that
+  lands inside a park cannot leave `parked` stuck high.
+- `ms1_main.sv`: the same for the main 68000 while the peekaboo MCU holds it
+  (`m68k_hold`, its first moments and the watchdog reboot).
+
+The `~ss_resume` term matters. `S_RELWAIT` waits for `~ss_parked`, and a
+CPU in reset never leaves a monitor, so without it every release would run
+to the engine's timeout.
+
+### The harness had the same blind spot, and it was MS1-33
+
+`tb_frames.cpp`'s `release()` raised `ss_resume`, ticked 64 times and dropped
+`ss_freeze`. The engine instead holds `ss_freeze` until `~ss_parked`
+(`S_RELWAIT`). 64 ticks is two or three bus cycles; the monitor needs about
+twenty to reload A7/USP, pop fifteen registers and RTE. When `ss_freeze`
+fell, the overlay went with it, and the CPU read 0x0000 for its own code and
+ran on into unmapped space. On chimeraba this was a visible ILLEGAL
+INSTRUCTION screen. Elsewhere the result depended on bus timing: often the
+game survived, sometimes it was subtly off.
+
+`release()` now waits for `ss_parked` to drop (and warns if it never does).
+Measured on the RTL at `851e531`, which has none of this entry's changes:
+
+| avspirit, saved at frame 100 | frame 3 after restore |
+|---|---|
+| old `release()` | 521 of 4741 lit pixels differ |
+| `release()` waiting for `~ss_parked` | 0 |
+
+That is MS1-33's signature, at the same frame and lit-pixel count. MS1-33's
+own notes had already observed that `release()` "ticks only 128 times" and
+that "the monitor needs far longer than that". It was a harness artifact.
+The hardware engine has always waited, so the board never had it.
+
+### Measured
+
+All runs use `sim/rtl/ms1_frames`, `MS1_SS=1`, with the fixed `release()`
+and the MS1-73 fix:
+
+| set | prot | saved at frame | after frame 0 |
+|---|---|---|---|
+| peekaboo | 0 (MCU) | 6, 45 | 7 / 7 identical |
+| peekaboo | 3 (old sim) | 45 | 7 / 7 |
+| peekaboou | 0 | 45 | 7 / 7 |
+| hayaosi1 | 1 | 30 | 3 / 3 |
+| monkelf | 2 | 30 | 3 / 3 |
+| chimeraba | 1 | 30 | 7 / 7 |
+| chimerab | 0 | 30 | 7 / 7 |
+| avspirit | 0 | 40, 100 | all identical |
+| 64street | 0 | 40, 100 | 3 / 3 |
+
+On the board (192.168.1.138), with the build that carries MS1-72 and MS1-73
+(rbf md5 `b8d0b311...`): save with Alt+F1, wait 9 s, load with F1, wait
+5 s, load with F1 again.
+
+- All seven sets tested wrote a 393224-byte `.ss` (0x30000 words plus the
+  8-byte header): peekaboo, peekaboou, hayaosi1, monkelf, chimeraba, and
+  64street and avspirit as controls. For the first five it is the first one
+  ever.
+- In every set, both loads came back to the same screen and play went on:
+  - peekaboo and peekaboou: mid-game, score 2010;
+  - 64street: mid-fight, timer 48;
+  - monkelf: the same frame both times.
+
+## MS1-73 — A load restored the 68000s' phase onto live CPUs (fixed)
+
+Found while measuring MS1-72. Once `release()` waited for `~ss_parked`,
+64street saved at frame 100 printed "a CPU never left its park monitor"
+and differed in 3289 pixels from frame 0 on. Both happened on the RTL at
+`851e531` too.
+
+A bus trace across the load shows how. The main 68000 parks, the load
+streams in, and the CPU then takes vector 4: ILLEGAL INSTRUCTION, PC
+0x0C0024, which is inside the monitor (`move.l SSP_REG,a7`). The game's
+handler spins in `STOP`, never runs the monitor's RTE, and `ss_parked`
+stays high. On the board the engine would time out in `S_RELWAIT`, drop
+`ss_freeze`, and leave the CPU running wherever the vanished overlay sent
+it.
+
+The cause is in `ss_misc` word 5: `{phase, as_d}`. `phase` chooses whether
+the next 68000 clock enable is phi1 or phi2, and fx68k must see them
+strictly alternate. **fx68k itself is not in the image.** It is parked in
+the monitor wherever the load froze it, and that is usually a different
+point in a different bus cycle from the one the save caught. Writing back
+the saved `phase` therefore handed it two phi1s, or two phi2s, in a row.
+A save never showed this, because it only reads.
+
+The sound 68000 had the same flaw (`cpu_ph` in `ms1_sound.sv` word 7).
+
+Fix: neither is restored any more. The phase now follows the CPU that is
+running. `phdiv` and `cpu_acc` are still restored: they move when the next
+edge comes, never which kind it is. The image fields are still written, so
+the layout is unchanged. `as_d` was never restored; it only feeds the bus
+trace.
+
+After the fix, 64street saved at frame 100 matches in 3 of 3 frames, with
+the monitor exiting normally.
