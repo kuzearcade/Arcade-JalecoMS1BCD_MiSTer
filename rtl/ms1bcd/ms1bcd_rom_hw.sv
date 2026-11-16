@@ -70,6 +70,10 @@ module ms1bcd_rom_hw (
 	input        [8:0]  prom_addr,     // priority PROM, 512 B, ioctl index 1
 	output       [7:0]  prom_data,
 
+	// simulated protection's command table, 8 B, ioctl index 2 (MS1-75)
+	output reg  [63:0]  io_tab,
+	output reg          io_tab_ok,
+
 	// ------------------------------------------------- golden-byte audit
 	// Walks every byte of every region through the REAL cache and the REAL
 	// SDRAM controller, so a mismatch separates "the cache never fills" from
@@ -152,6 +156,20 @@ module ms1bcd_rom_hw (
 	reg [7:0] prom_q;
 	always @(posedge clk) prom_q <= promram[prom_addr];
 	assign prom_data = prom_q;
+
+	// ------------------------------- iosim command table (index 2, MS1-75)
+	// Seven command bytes and a mask of which exist (ms1_main). Valid once
+	// the mask byte, the last, has arrived. Cleared by every index-0
+	// download, which the .mra always sends first, so a table never outlives
+	// the set that brought it and an .mra without one falls back to the
+	// built-ins.
+	always @(posedge clk) begin
+		if (pwr_reset || dl_rom) io_tab_ok <= 1'b0;
+		else if (ioctl_download && ioctl_index == 8'd2 && ioctl_wr && ioctl_addr < 27'd8) begin
+			io_tab[8*ioctl_addr[2:0] +: 8] <= ioctl_dout;
+			if (ioctl_addr[2:0] == 3'd7) io_tab_ok <= 1'b1;
+		end
+	end
 
 	// Every cache is held in reset for the whole transfer. Without this they
 	// run while the ROM streams, and since the core's address inputs sit at

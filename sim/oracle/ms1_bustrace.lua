@@ -49,7 +49,8 @@ local SET = {
 }
 
 local setname = emu.romname()
-local e = SET[setname]
+-- '<set>sim' is the local MAME's simulated-protection clone of <set> (MS1-75)
+local e = SET[setname] or SET[(setname:gsub('sim$', ''))]
 if not e then
   print(('ms1_bustrace: %s is not a B/C/D set'):format(setname))
   return

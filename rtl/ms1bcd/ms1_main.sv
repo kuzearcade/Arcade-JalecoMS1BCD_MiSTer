@@ -77,6 +77,12 @@ module ms1_main (
 	//   simulation (MAME's protection_peekaboo_r/w). System D with 0 runs
 	//   its dumped MO-92033 instead -- see d_mcu below.
 	input        [1:0]  prot,
+	// prot == 1's command table, from the .mra's <rom index="2"> (MS1-75):
+	// bytes 0-6 are the commands, byte 7 a mask of which of them exist.
+	// Without one (io_tab_ok low, an .mra from before MS1-75) the B / C
+	// built-ins below are used.
+	input       [63:0]  io_tab,
+	input               io_tab_ok,
 
 	// program ROM, served by the caller (512 KB, word addressed)
 	output      [18:0]  rom_addr,
@@ -263,10 +269,16 @@ module ms1_main (
 	wire       use_iosim  = (prot == 2'd1);
 	// monkelf is the only shipped set with prot == 2 (edfbl is excluded).
 	wire       is_monkelf = (prot == 2'd2);
-	wire [7:0] io_c0 = is_c ? 8'h56 : 8'h51;
-	wire [7:0] io_c3 = is_c ? 8'h55 : 8'h54;
-	wire [7:0] io_c4 = is_c ? 8'h54 : 8'h55;
-	wire [7:0] io_c5 = is_c ? 8'hFA : 8'hFC;
+	// Built-ins (hayaosi1 on B, chimeraba on C), all seven present.
+	wire [63:0] io_tab_bi = is_c ? 64'h7F_06_FA_54_55_53_52_56
+	                             : 64'h7F_06_FC_55_54_53_52_51;
+	wire [63:0] io_tab_q  = io_tab_ok ? io_tab : io_tab_bi;
+	// hit[i]: the command is entry i and entry i exists
+	wire [6:0] io_hit;
+	genvar gi;
+	generate for (gi = 0; gi < 7; gi = gi + 1) begin : g_iohit
+		assign io_hit[gi] = io_tab_q[56 + gi] & (oEdb[7:0] == io_tab_q[8*gi +: 8]);
+	end endgenerate
 	reg  [7:0] io_latched;
 	reg        io_irq2;
 	reg        io_int1_d;
@@ -881,12 +893,16 @@ module ms1_main (
 	//              SYSTEM  P1   P2   DSW1  DSW2  0x0d   0x06
 	//   hayaosi1   51      52   53   54    55    FC     06     (System B)
 	//   chimeraba  56      52   53   55    54    FA     06     (System C)
+	//   64street   57      53   54   55    56    --     06     (MS1-75)
 	//
-	// hayaosi1 is the only System B set that uses iosim and chimeraba the only
-	// System C one, so `is_c` picks the table exactly -- no extra .mra field.
-	// Indices 5 and 6 answer with CONSTANTS 0x0d and 0x06; it is the COMMAND
-	// that differs per game, not the reply.
-	wire [7:0] io_cmd = oEdb[7:0];         // MAME masks the word to its low byte
+	// The table is the .mra's (io_tab, MS1-75), so any set can run simulated
+	// -- 64street, bigstrik, cybattlr, edf and avspirit from MAME's old
+	// tables, for a romset without its MCU dump. An .mra without one gets
+	// hayaosi1's on B and chimeraba's on C, which is what every shipped
+	// iosim set uses. Entries 5 and 6 answer with CONSTANTS 0x0d and 0x06;
+	// it is the COMMAND that differs per game, not the reply. MAME takes the
+	// first entry that matches, so the priority below runs 0 to 6.
+	// MAME masks the word to its low byte; io_hit compares oEdb[7:0].
 
 	// IRQ2 has TWO sources on a simulated board, and MAME models both:
 	//
@@ -918,13 +934,13 @@ module ms1_main (
 		end
 		else if (use_iosim & int1 & ~io_int1_d) io_irq2 <= 1'b1;
 		else if (use_iosim & prot_we_edge) begin
-			if      (io_cmd == io_c0)  begin io_latched <= in_system; io_irq2 <= 1'b1; end
-			else if (io_cmd == 8'h52)  begin io_latched <= in_p1;     io_irq2 <= 1'b1; end
-			else if (io_cmd == 8'h53)  begin io_latched <= in_p2;     io_irq2 <= 1'b1; end
-			else if (io_cmd == io_c3)  begin io_latched <= in_dsw1;   io_irq2 <= 1'b1; end
-			else if (io_cmd == io_c4)  begin io_latched <= in_dsw2;   io_irq2 <= 1'b1; end
-			else if (io_cmd == io_c5)  begin io_latched <= 8'h0D;     io_irq2 <= 1'b1; end
-			else if (io_cmd == 8'h06)  begin io_latched <= 8'h06;     io_irq2 <= 1'b1; end
+			if      (io_hit[0]) begin io_latched <= in_system; io_irq2 <= 1'b1; end
+			else if (io_hit[1]) begin io_latched <= in_p1;     io_irq2 <= 1'b1; end
+			else if (io_hit[2]) begin io_latched <= in_p2;     io_irq2 <= 1'b1; end
+			else if (io_hit[3]) begin io_latched <= in_dsw1;   io_irq2 <= 1'b1; end
+			else if (io_hit[4]) begin io_latched <= in_dsw2;   io_irq2 <= 1'b1; end
+			else if (io_hit[5]) begin io_latched <= 8'h0D;     io_irq2 <= 1'b1; end
+			else if (io_hit[6]) begin io_latched <= 8'h06;     io_irq2 <= 1'b1; end
 		end
 	end
 

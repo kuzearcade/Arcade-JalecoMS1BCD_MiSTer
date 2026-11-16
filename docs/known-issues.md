@@ -78,6 +78,7 @@ pixel for pixel.
 | MS1-72 | A CPU held in reset can never park, so no set that holds one could save | fixed — a CPU in reset counts as parked; peekaboo, hayaosi1, monkelf and chimeraba save and load on the board for the first time |
 | MS1-73 | A load restored the 68000s' phi1/phi2 phase onto CPUs that are not in the image | fixed — `phase` / `cpu_ph` no longer restored; 64street's illegal instruction after a load is gone |
 | MS1-74 | MAME upstreamed its own peekaboo MCU hookup and TLCS-90 A/D converter; ours differed in the A/D model | fixed — the A/D follows upstream (190/380-clock conversion, 3-bit channel, INTEH<ADIS> picks INTAD vs timer 2); the test MAME carries upstream's two commits |
+| MS1-75 | Simulated protection used Chimera Beast's command table for every System C set, so an iosim 64street had no inputs (issue #4) | fixed — the table comes from the .mra (`<rom index="2">`); `gen_ms1bcd_mra.py --iosim SET` writes an MCU-less .mra |
 
 ---
 
@@ -3661,3 +3662,68 @@ Levels after the loads are within 3 dB of after the save.
 | edf / set2 / set3 / na | -25.8 / -26.1 / -26.9 / -29.1 | -22.6 / -22.4 / -24.1 / -22.6 | -24.9 / -25.2 / -24.2 / -24.7 |
 | hayaosi1 | -18.3 | -18.5 | -18.4 |
 | peekaboo, peekaboou | -19.1, -21.1 | -21.1, -20.7 | -18.3, -20.6 |
+
+## MS1-75 — Simulated protection's command table comes from the .mra (fixed)
+
+Issue #4. A user without `mo-91009.mcu` hand-edited 64street's `.mra` to
+simulated protection (game-mode byte `0x21`, the MCU part zero-filled). The
+game booted with every input dead. The responder in `ms1_main.sv` had P1 `52`,
+P2 `53` and `06` hard-coded, and only SYSTEM, DSW1, DSW2 and the `0d` command
+switched, on `is_c`, between hayaosi1's table (B) and chimeraba's (C).
+64street sends SYSTEM `57`, P1 `53`, P2 `54`, DSW1 `55`, DSW2 `56`, so coin
+and start matched nothing and each input read the wrong port. This was right
+for the two shipped `iosim` sets and wrong for any other. The per-set tables
+were in `tools/gen_ms1bcd_mra.py` (`IOSIM_SEQ`) but nothing used them, and
+their `0d` entries were missing.
+
+**Fix.** The table travels in the `.mra`, as MAME gives each set its own
+`m_ip_select_values`:
+
+- `<rom index="2">` is 8 bytes: the seven commands in `ip_select_w` order
+  (SYSTEM P1 P2 DSW1 DSW2, the `0d` reply, the `06` reply), then a mask of
+  which exist. `ms1bcd_rom_hw.sv` latches it. Every index-0 download clears
+  it, so a table never outlives its set.
+- `ms1_main.sv` matches all seven against it, first match wins, as MAME's
+  loop does. An `.mra` with no table, i.e. from before this change, gets the
+  old built-ins, which are exactly what the two shipped `iosim` sets send.
+- `IOSIM_SEQ` now holds MAME's own last tables: `megasys1.h` before
+  `11b8f8af4c6` (2023-11-21, when 64street's MCU was dumped), and bigstrik's
+  from mame0200. `0d` is `ff`/`f0`/`fa`/`fb`/`f2` for avspirit / edf /
+  64street / bigstrik / cybattlr. chimerab used Cybattler's table. Clones
+  inherit their parent's.
+- `gen_ms1bcd_mra.py --iosim SET [--out DIR]` writes `<desc> [iosim].mra`.
+  It has simulated protection, the table, and the MCU region zero-filled, so
+  the romset needs no MCU dump. It refuses monkelf, which has nothing to
+  simulate, and System D. Nothing like it ships.
+- The reference sim reads an optional `iosim.bin` (`gen_ms1bcd_ioctl.py`
+  writes it for `iosim` sets, or with `--iosim`).
+
+**Reference.** Current MAME runs none of these simulated. The local test
+MAME gains `64streetsim`, `avspiritsim`, `edfsim`, `bigstriksim` and
+`cybattlrsim`, a local diagnostic patch: each set on `system_C_iosim` or a
+`system_B_iosim` with its old table, as MAME ran them before the dumps. The
+capture scripts accept a `sim` suffix.
+
+**Measured.**
+
+| check | result |
+|---|---|
+| hayaosi1, chimeraba: built-in vs `.mra` table, 60 frames | frames and the whole protection conversation identical |
+| 64street: core with the table vs `64streetsim` | every command answered (`fa` -> `0d`, inputs read); 230/300 frames exact at a fixed offset. The rest are a 3-frame boot lead: the core leaves the logo's 7-frame black gap at frame 8, MAME at 11 |
+| 64street, Flip Screen on, vs `64streetsim` flipped | with the table 135/150 exact; without it (the old built-ins) 9/150, because DSW2 never arrives. This is issue #4 |
+| avspirit, edf, bigstrik, cybattlr vs their `*sim` clones | 267, 289, 297 and 209 of 300 exact; every command answered |
+| shipped `.mra` files | only the header comment changes, plus `<rom index="2">` on hayaosi1 and chimeraba carrying the built-in values |
+
+**Board** (192.168.1.138, `releases/Arcade-JalecoMS1BCD_20261116.rbf`, md5
+`2984909345a6a0a6494b9fe1a42a33f6`; setup +0.172 / hold +0.248 ns, 70 % ALMs,
+544/553 RAM blocks). Five `--iosim` `.mra` files: 64street, avspirit, edf,
+bigstrik and cybattlr. Each coins up (CREDITS 2) and starts a game
+(CREDIT 1), which is what issue #4 could not do. hayaosi1 and chimeraba do
+the same on their old table-less `.mra` (the built-in fallback) and on the
+new ones (the table). 64street on its real MCU is unchanged.
+
+Seen on the way, not caused by this and not fixed: the reference sim draws
+chimeraba's title backdrop purple where MAME draws black. The board draws it
+black, so this is the sim, not the core. The built-in table gives identical
+sim frames, so it predates MS1-75.
+

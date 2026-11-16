@@ -628,6 +628,7 @@ wire [17:0] oki2_rom_addr;
 wire  [7:0] oki1_rom_data, oki2_rom_data;
 wire        oki1_stall, oki2_stall;
 wire  [8:0] prom_addr;     wire [7:0] prom_data;
+wire [63:0] io_tab;        wire       io_tab_ok;   // <rom index="2">, MS1-75
 wire [31:0] dbg_dl_bytes, dbg_prom_bytes;
 
 // ---------------------------------------------------------------------------
@@ -784,6 +785,7 @@ ms1bcd_rom_hw rom_hw (
 	.oki1_rom_data(oki1_rom_data), .oki2_rom_data(oki2_rom_data),
 	.oki1_stall(oki1_stall), .oki2_stall(oki2_stall),
 	.prom_addr(prom_addr), .prom_data(prom_data),
+	.io_tab(io_tab), .io_tab_ok(io_tab_ok),
 	// The golden-byte audit is a bring-up instrument, not a runtime feature.
 	.audit_en(aud_en), .audit_sel(aud_sel), .audit_addr(aud_addr),
 	.audit_data(audit_data), .audit_ready(audit_ready),
@@ -944,6 +946,7 @@ ms1bcd_core #(.LOOKAHEAD(8)) core (
 	// controller is up, so no cache can be asked for a byte that is not there.
 	.reset(reset | ~sdram_ready | aud_en),
 	.mode(mode), .prot(prot_sel),
+	.io_tab(io_tab), .io_tab_ok(io_tab_ok),
 
 	.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 	.mcu_rom_addr(mcu_rom_addr), .mcu_rom_data(mcu_rom_data), .mcu_rom_ready(mcu_rom_ready),

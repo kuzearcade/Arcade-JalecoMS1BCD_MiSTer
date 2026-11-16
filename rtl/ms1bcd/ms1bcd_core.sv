@@ -19,6 +19,9 @@ module ms1bcd_core #(
 	input        [1:0]  mode,          // 0 = B, 1 = C, 2 = D
 	// .mra game-mode byte bits 6:5: 0 real MCU, 1 simulated, 2 none, 3 D's own.
 	input        [1:0]  prot,
+	// prot == 1's command table from <rom index="2">; see ms1_main (MS1-75).
+	input       [63:0]  io_tab,
+	input               io_tab_ok,
 
 	output      [18:0]  rom_addr,
 	input       [15:0]  rom_data,
@@ -193,6 +196,7 @@ module ms1bcd_core #(
 
 	ms1_main u_main (
 		.clk(clk), .reset(reset), .mode(mode), .prot(prot),
+		.io_tab(io_tab), .io_tab_ok(io_tab_ok),
 		.rom_addr(rom_addr), .rom_data(rom_data), .rom_ready(rom_ready),
 		.ss_active(ss_active), .ss_addr(ss_addr), .ss_wr(ss_wr),
 		.ss_wdata(ss_wdata), .ss_rdata(ss_main_rdata),

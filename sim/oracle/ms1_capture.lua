@@ -94,7 +94,8 @@ local MAP = {
 }
 
 local setname = emu.romname()
-local mode = MODE[setname]
+-- '<set>sim' is the local MAME's simulated-protection clone of <set> (MS1-75)
+local mode = MODE[setname] or MODE[(setname:gsub('sim$', ''))]
 if not mode then
   print(('ms1_capture: %s is not a B/C/D set; nothing to capture'):format(setname))
   return

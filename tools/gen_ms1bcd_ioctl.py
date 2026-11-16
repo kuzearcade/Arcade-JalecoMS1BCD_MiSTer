@@ -96,6 +96,8 @@ def main():
     ap.add_argument('--out-dir', help='write the per-region reference images here')
     ap.add_argument('--stream', help='write the flat ioctl byte stream here')
     ap.add_argument('--prom', help='write the priority PROM (ioctl index 1) here')
+    ap.add_argument('--iosim', action='store_true',
+                    help='write iosim.bin (ioctl index 2) even for a set that runs its MCU')
     a = ap.parse_args()
 
     e = ROMDATA[a.setname]
@@ -127,6 +129,12 @@ def main():
         if a.out_dir:
             open(os.path.join(a.out_dir, 'prom.bin'), 'wb').write(pd)
         print(f'  proms     {len(pd)} bytes')
+
+    # simulated protection's command table (MS1-75), what <rom index="2"> sends
+    if a.out_dir and (a.iosim or G.EXTRA[a.setname]['prot'] == 'iosim'):
+        tab, key = G.iosim_bytes(a.setname)
+        open(os.path.join(a.out_dir, 'iosim.bin'), 'wb').write(tab)
+        print(f'  iosim     {tab.hex(" ")} ({key})')
     return 0
 
 

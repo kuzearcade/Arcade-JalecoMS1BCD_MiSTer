@@ -115,6 +115,7 @@ module ms1_hw_top (
 	wire  [7:0] c_oki1_data, c_oki2_data;
 	wire        c_oki1_stall, c_oki2_stall;
 	wire  [8:0] c_prom_addr; wire [7:0] c_prom_data;
+	wire [63:0] io_tab;      wire       io_tab_ok;
 
 	// The core is held in reset for the whole transfer and until the
 	// controller reports ready, so no cache is ever asked for a byte that is
@@ -124,6 +125,7 @@ module ms1_hw_top (
 
 	ms1bcd_core #(.LOOKAHEAD(8)) u_core (
 		.clk(clk_sys), .reset(core_reset), .mode(mode), .prot(prot),
+		.io_tab(io_tab), .io_tab_ok(io_tab_ok),
 		// Debug-only bisection aid, explicitly off here: an unconnected reset
 		// input is not something to leave to the tool's x-assign policy.
 		.ss_rst_dbg(4'd0),
@@ -180,6 +182,7 @@ module ms1_hw_top (
 		.oki1_rom_data(c_oki1_data), .oki2_rom_data(c_oki2_data),
 		.oki1_stall(c_oki1_stall), .oki2_stall(c_oki2_stall),
 		.prom_addr(audit_en ? audit_addr[8:0] : c_prom_addr), .prom_data(c_prom_data),
+		.io_tab(io_tab), .io_tab_ok(io_tab_ok),
 
 		.audit_en(audit_en), .audit_sel(audit_sel), .audit_addr(audit_addr),
 		.audit_data(audit_data), .audit_ready(audit_ready),

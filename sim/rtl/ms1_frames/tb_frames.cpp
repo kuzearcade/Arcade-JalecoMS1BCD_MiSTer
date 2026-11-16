@@ -70,6 +70,17 @@ int main(int argc, char **argv) {
 	// Protection model, as the .mra game-mode byte bits 6:5 encode it:
 	// 0 real MCU (default, every set with a dumped TMP91640), 1 simulated.
 	top->prot = envl("MS1_PROT", 0);
+	// prot == 1's command table, as the .mra's <rom index="2"> carries it
+	// (MS1-75): an optional iosim.bin of 7 commands + a presence mask. Absent,
+	// the core falls back to its built-in hayaosi1 / chimeraba tables.
+	{
+		auto tab = slurp(d + "/iosim.bin", false);
+		uint64_t t = 0;
+		for (size_t i = 0; i < 8 && i < tab.size(); i++) t |= uint64_t(tab[i]) << (8 * i);
+		top->io_tab = t;
+		top->io_tab_ok = tab.size() >= 8;
+		if (top->io_tab_ok) fprintf(stderr, "iosim table %016llx\n", (unsigned long long)t);
+	}
 	// The reference sim serves every ROM from a zero-latency array, so every
 	// handshake is permanently satisfied. This is the baseline the hardware
 	// path is compared against.

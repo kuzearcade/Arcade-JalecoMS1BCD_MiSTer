@@ -31,7 +31,10 @@ assumed and what is still open.
 ## Supported games
 
 Sixteen sets. `iosim` is MAME's simulated I/O protection, `mcu` is the real
-TLCS-90 (TMP91640) running its dumped ROM.
+TLCS-90 (TMP91640) running its dumped ROM. For a romset without its MCU dump,
+`tools/gen_ms1bcd_mra.py --iosim <set>` writes an extra `.mra` that simulates
+the protection instead, with the set's command table from MAME (System B and
+C only; not shipped, and not reference-tested beyond the attract).
 
 ### System B — 68000 @ 8 MHz, sound 68000 @ 7 MHz, YM2151, 2 × OKIM6295 @ 4 MHz
 
