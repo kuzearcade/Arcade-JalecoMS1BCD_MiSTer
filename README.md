@@ -61,8 +61,8 @@ TLCS-90 (TMP91640) running its dumped ROM.
 
 | set | game | protection |
 |---|---|---|
-| `peekaboo` | Peek-a-Boo! (Japan, ver. 1.1, 1993) | its own |
-| `peekaboou` | Peek-a-Boo! (North America, ver 1.0) | its own |
+| `peekaboo` | Peek-a-Boo! (Japan, ver. 1.1, 1993) | mcu |
+| `peekaboou` | Peek-a-Boo! (North America, ver 1.0) | mcu |
 
 `edfbl` is deliberately excluded: it is not a System B board (a PIC in place
 of the TMP91640, no sound CPU, a banked OKI), and MAME flags the whole
@@ -70,8 +70,10 @@ machine `MACHINE_NO_SOUND`.
 
 System D is a different board rather than a variant — two scroll layers
 instead of three, an `RGBx_555` palette, no `global_mask`, one vblank IRQ
-instead of three scanline IRQs, and its own protection port that doubles as
-the sample-bank latch.
+instead of three scanline IRQs. Its MCU (MO-92033, also a TMP91640) is wired
+differently from B and C: it answers on a single port at `0x100000`, reads the
+paddles on its A/D converter, drives the sample-bank latch, and holds the
+68000 in reset until its handshake is done.
 
 `clk_sys` is 48 MHz. Most of the board divides out of it exactly — main
 68000 /6 (B, D) or /4 (C), OKI /12 or /24, pixel clock /8 = 6 MHz — but the
