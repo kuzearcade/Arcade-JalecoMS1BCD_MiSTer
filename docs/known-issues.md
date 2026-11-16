@@ -3637,4 +3637,27 @@ is superseded.
 | paddles through the A/D, core | P1 30 -> 30, P2 C0 -> C0, P1 02 -> 04 (the MCU's clamp), P2 FE -> FE, as before |
 | service mode, 90 frames, core | frames identical to before; one `fb`, so the watchdog never fired |
 
-Not rebuilt for the board: the change only shortens the conversion.
+| build | 70 % ALMs, 544/553 RAM blocks, setup +0.535 / hold +0.206 ns |
+
+**Board** (192.168.1.138, `releases/Arcade-JalecoMS1BCD_20261115.rbf`, md5
+`bccba9c7a8dd118a969f6b0f8c0ef50b`). Each of the 16 `.mra` files was run through
+coin, start, fire. A screenshot was taken 2 s after the save key and 2 s after
+each of two load keys, with HDMI audio recorded throughout (capture box,
+48 kHz). Every set wrote a 393224-byte `.ss`. Each load returned to the saved
+moment: the three screenshots show the same scene, within a few frames of
+motion. Pixel differences are 0-6 %, except the full-screen scrollers
+chimerab, chimeraba and cybattlr, which reach 23-34 % for a frame or two of
+scroll. Every set had sound after both loads, with no silence except E.D.F.'s
+own 3 s break, which falls at the same point in the after-save capture too.
+Levels after the loads are within 3 dB of after the save.
+
+| set | after save | load 1 | load 2 (dBFS) |
+|---|---|---|---|
+| 64street / j / ja | -15.5 / -15.6 / -15.3 | -15.5 / -15.3 / -15.2 | -15.3 / -15.2 / -15.4 |
+| avspirit, monkelf | -16.1, -16.2 | -16.0, -16.4 | -15.7, -16.1 |
+| bigstrik | -17.3 | -17.3 | -19.8 |
+| chimerab, chimeraba | -10.5, -10.7 | -10.8, -10.7 | -10.6, -10.4 |
+| cybattlr | -13.1 | -13.2 | -13.7 |
+| edf / set2 / set3 / na | -25.8 / -26.1 / -26.9 / -29.1 | -22.6 / -22.4 / -24.1 / -22.6 | -24.9 / -25.2 / -24.2 / -24.7 |
+| hayaosi1 | -18.3 | -18.5 | -18.4 |
+| peekaboo, peekaboou | -19.1, -21.1 | -21.1, -20.7 | -18.3, -20.6 |
