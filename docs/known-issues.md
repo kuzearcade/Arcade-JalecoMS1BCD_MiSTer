@@ -79,6 +79,7 @@ pixel for pixel.
 | MS1-73 | A load restored the 68000s' phi1/phi2 phase onto CPUs that are not in the image | fixed — `phase` / `cpu_ph` no longer restored; 64street's illegal instruction after a load is gone |
 | MS1-74 | MAME upstreamed its own peekaboo MCU hookup and TLCS-90 A/D converter; ours differed in the A/D model | fixed — the A/D follows upstream (190/380-clock conversion, 3-bit channel, INTEH<ADIS> picks INTAD vs timer 2); the test MAME carries upstream's two commits |
 | MS1-75 | Simulated protection used Chimera Beast's command table for every System C set, so an iosim 64street had no inputs (issue #4) | fixed — the table comes from the .mra (`<rom index="2">`); `gen_ms1bcd_mra.py --iosim SET` writes an MCU-less .mra |
+| MS1-76 | iosim avspirit and edf got hayaosi1's quiz-panel inputs: no buttons 1-2, buttons on the directions (issue #5) | fixed — the quiz layout also needs the .mra table's SYSTEM command to be 0x51 (or no table); board-tested |
 
 ---
 
@@ -3727,3 +3728,43 @@ chimeraba's title backdrop purple where MAME draws black. The board draws it
 black, so this is the sim, not the core. The built-in table gives identical
 sim frames, so it predates MS1-75.
 
+## MS1-76 — iosim avspirit and edf get hayaosi1's input layout (fixed)
+
+Issue #5. With MS1-75's `--iosim` `.mra`, avspirit and edf coin up and
+start, but buttons 1 and 2 never register and the directions follow the
+buttons (edf's ship climbs while Fire is held).
+
+**Cause.** `MS1BCD.sv` chose hayaosi1's three-player quiz panel
+(`h_p1`/`h_p2`/`h_sys`) for any System B set on simulated protection. Before
+MS1-75 that was hayaosi1 alone. Now avspirit and edf are System B iosim too.
+The quiz panel ties off P1 bits 4 and 5, which are buttons 1 and 2 in the
+generic layout, and puts other players' quiz buttons on bits 0-3, which are
+the directions. `h_sys` and `g_sys` agree on coin and start (bits 0, 1, 6
+and 7), so MS1-75's board check (coin up and start) passed.
+
+**Fix.** `lay_haya` also requires the `.mra` command table's first byte, the
+SYSTEM command, to be 0x51: hayaosi1's, against avspirit's 0x37 and edf's
+0x20. An `.mra` without a table (`io_tab_ok` low) predates MS1-75, when
+hayaosi1 was the only System B iosim set, so it keeps the quiz panel. This
+fixes the `--iosim` `.mra` files already generated, with no regeneration. A
+spare mode-byte bit for the layout was rejected because it would leave
+existing hayaosi1 `.mra` files on the wrong layout. The reporter
+board-tested the same check on a local build. System C and System D are
+unaffected: the condition still requires mode B.
+
+The reference sim does not include the top-level input mux, so the only
+checks are the build and the board.
+
+**Board** (192.168.1.138, build md5 `d18e35040629fa69e52578f0466dcb04`;
+70 % ALMs, 544/553 RAM blocks, setup +0.194 / hold +0.184 ns). The virtual
+keyboard drove P1: arrows for the stick, LCtrl for B1, LAlt for B2.
+Screenshots were taken after each input. Each `[iosim]` set also ran on the
+released v2026-11-16 core, for contrast.
+
+| set | v2026-11-16 | this build |
+|---|---|---|
+| edf `[iosim]` | Fire held 2 s sends the ship to the top of the screen, and it stays there: issue #5 reproduced | Fire held 2 s: ship stays mid-screen and fires; Up held 2 s takes it to the top |
+| avspirit `[iosim]` | the heroine never leaves the first tower; the screen never scrolls | Right scrolls the stage on to the red crane, Left scrolls it back, B2 jumps |
+| 64street `[iosim]` (System C) | — | Rick walks right and left and punches, as before |
+| hayaosi1, current `.mra` (table, 0x51) | — | F2 opens TEST MODE, so F2 is on SYSTEM bit 3: the quiz layout is active |
+| hayaosi1, `.mra` from before MS1-75 (no table) | — | the same: F2 opens TEST MODE; attract mode is frame-for-frame the same as with the table |

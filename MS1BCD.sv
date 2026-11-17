@@ -495,16 +495,26 @@ wire p2_b3 = af2_en ? 1'b0 : p2_raw[6];
 // nothing else here knows which set is loaded:
 //
 //   peekaboo   mode == D              -- both System D sets, and only those
-//   hayaosi1   mode == B && prot == 1 -- the only simulated-protection B set
-//                                        (chimeraba is the other iosim set,
-//                                        and it is System C)
+//   hayaosi1   mode == B && prot == 1 -- simulated-protection B set whose
+//              && table SYSTEM == 0x51   command table starts with 0x51, or
+//                                        that has no table at all
 //   generic    everything else        -- MAME's INPUT_PORTS_START(megasys1_generic)
+//
+// Since MS1-75, --iosim makes simulated-protection .mra files for avspirit
+// and edf too, and they are System B as well, so mode and prot no longer
+// single out hayaosi1: given its quiz panel, avspirit/edf lost buttons 1-2
+// and had buttons on the directions (issue #5, MS1-76). The .mra's command
+// table tells them apart -- hayaosi1's SYSTEM command is 0x51, avspirit's
+// 0x37, edf's 0x20. An .mra with no table (io_tab_ok low) predates MS1-75,
+// when hayaosi1 was the only B iosim set, so it still gets the quiz panel.
 //
 // The generic layout's direction order is right/left/down/up, which is the
 // MiSTer pad's own bit order, so unlike Sand Scorpion nothing is reversed.
 // ------------------------------------------------------------------
 wire lay_peek = (mode == 2'd2);
-wire lay_haya = (mode == 2'd0) & (prot_sel == 2'd1);
+wire [63:0] io_tab;        wire       io_tab_ok;   // <rom index="2">, MS1-75
+wire lay_haya = (mode == 2'd0) & (prot_sel == 2'd1)
+              & (~io_tab_ok | (io_tab[7:0] == 8'h51));
 
 // MiSTer numbers the pad's buttons by POSITION IN THE .mra's <buttons> LIST:
 // every set's list names three buttons, so Start and Coin are bits 7 and 8.
@@ -628,7 +638,6 @@ wire [17:0] oki2_rom_addr;
 wire  [7:0] oki1_rom_data, oki2_rom_data;
 wire        oki1_stall, oki2_stall;
 wire  [8:0] prom_addr;     wire [7:0] prom_data;
-wire [63:0] io_tab;        wire       io_tab_ok;   // <rom index="2">, MS1-75
 wire [31:0] dbg_dl_bytes, dbg_prom_bytes;
 
 // ---------------------------------------------------------------------------
