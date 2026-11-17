@@ -3820,6 +3820,10 @@ attract (System D, banked OKI) drifts away from MAME after a few seconds on
 both builds, so it cannot judge this change. Its first 8 s are 0.93-0.97 on
 this build against 0.18-0.35 on the released one.
 
-**Elsewhere.** The NMK16 cores use the same `oki_rom_cache` with jt6295's
-`rom_ok` tied high (e.g. `bioship_core.sv`, `blkheart_core.sv`), so they
-very likely have the same defect.
+**Elsewhere.** NMK16 does not have it. The cores its bitstreams are built
+from (`gunnail_core`, `raphero_core`, `tdragon2_core`) already pass the
+cache's `ready` as `rom_ok`. The per-game cores there that tie `rom_ok` high
+(`bioship_core.sv`, `blkheart_core.sv` and others) are reference cores that
+load their sample ROM with `$readmemh`, with no cache, and are in no `.qip`.
+Sand Scorpion does have it: `sandscrp_core.sv` ANDs the cache's stall out of
+the OKI's `cen` but ties `rom_ok` high.
