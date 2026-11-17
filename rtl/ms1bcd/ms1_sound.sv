@@ -65,9 +65,12 @@ module ms1_sound (
 	// music never stops and never restarts. See MS1-30.
 	input               sreset,
 	// HW_ROMS: rom_ready is the program cache; the two OKI stalls come from
-	// their own caches and are ANDed into the chips' cen. jt6295 ignores
-	// rom_ok, so without that AND it plays whatever byte happens to be on the
-	// bus -- Sand Scorpion shipped 37.6 % stale sample bytes for a week.
+	// their own caches. Each is ANDed out of its chip's cen AND drives its
+	// rom_ok, and the chip needs both. jt6295's ADPCM fetch ignores rom_ok,
+	// so the cen gate is what stops it decoding whatever byte is on the bus
+	// -- Sand Scorpion shipped 37.6 % stale sample bytes for a week. Its
+	// phrase-table read is the opposite: it runs on clk, not cen, so a frozen
+	// cen does not hold it, and rom_ok is the only thing it waits on (MS1-77).
 	input               rom_ready,
 	input               oki1_stall, oki2_stall,
 	input       [15:0]  latch_data,
@@ -418,16 +421,23 @@ module ms1_sound (
 		oki1_a[17]   ? {bank_eff + 3'd1, oki1_a[16:0]}       :
 		               {3'd0, oki1_a[16:0]};
 
+	// rom_ok is the cache's ready, not a constant (MS1-77, issue #6). Each
+	// sample start reads 8 phrase-table bytes (start and stop address)
+	// through jt6295_ctrl, which steps on clk and waits only on rom_ok. With
+	// rom_ok tied high, a phrase-table cache miss handed it the stale byte
+	// the cache was showing. Bytes 4-7 sit in the next 4-byte line, which
+	// the read reaches before the prefetch can land, so the stop address was
+	// often wrong: drums rang on into the following sample data.
 	jt6295 #(.INTERPOL(0)) u_oki1 (
 		.rst(snd_rst), .clk(clk), .cen(oki_cen & ~oki1_stall), .ss(1'b1),
 		.wrn(~oki1_wr_eff), .din(oki1_din_eff), .dout(oki1_dout),
-		.rom_addr(oki1_a), .rom_data(oki1_rom_data), .rom_ok(1'b1),
+		.rom_addr(oki1_a), .rom_data(oki1_rom_data), .rom_ok(~oki1_stall),
 		.sound(oki1_snd), .sample()
 	);
 	jt6295 #(.INTERPOL(0)) u_oki2 (
 		.rst(snd_rst), .clk(clk), .cen(oki_cen & ~oki2_stall), .ss(1'b1),
 		.wrn(~oki2_wr), .din(chip_din), .dout(oki2_dout),
-		.rom_addr(oki2_rom_addr), .rom_data(oki2_rom_data), .rom_ok(1'b1),
+		.rom_addr(oki2_rom_addr), .rom_data(oki2_rom_data), .rom_ok(~oki2_stall),
 		.sound(oki2_snd), .sample()
 	);
 

@@ -80,6 +80,7 @@ pixel for pixel.
 | MS1-74 | MAME upstreamed its own peekaboo MCU hookup and TLCS-90 A/D converter; ours differed in the A/D model | fixed — the A/D follows upstream (190/380-clock conversion, 3-bit channel, INTEH<ADIS> picks INTAD vs timer 2); the test MAME carries upstream's two commits |
 | MS1-75 | Simulated protection used Chimera Beast's command table for every System C set, so an iosim 64street had no inputs (issue #4) | fixed — the table comes from the .mra (`<rom index="2">`); `gen_ms1bcd_mra.py --iosim SET` writes an MCU-less .mra |
 | MS1-76 | iosim avspirit and edf got hayaosi1's quiz-panel inputs: no buttons 1-2, buttons on the directions (issue #5) | fixed — the quiz layout also needs the .mra table's SYSTEM command to be 0x51 (or no table); board-tested |
+| MS1-77 | Wrong drum sounds in Avenging Spirit on the board (issue #6): jt6295's phrase-table reads ignored the OKI cache's stall | fixed — each OKI's `rom_ok` is its cache's ready; board envelope corr. against MAME 0.76-0.79 -> 0.97 |
 
 ---
 
@@ -3768,3 +3769,57 @@ released v2026-11-16 core, for contrast.
 | 64street `[iosim]` (System C) | — | Rick walks right and left and punches, as before |
 | hayaosi1, current `.mra` (table, 0x51) | — | F2 opens TEST MODE, so F2 is on SYSTEM bit 3: the quiz layout is active |
 | hayaosi1, `.mra` from before MS1-75 (no table) | — | the same: F2 opens TEST MODE; attract mode is frame-for-frame the same as with the table |
+
+## MS1-77 — The OKIs read their phrase table through a cache miss (fixed)
+
+Issue #6: "incorrect drums sounds during the intro & the game" in Avenging
+Spirit, on v2026-11-16.
+
+**The sound board is not the cause.** `sim/rtl/ms1_snd` was driven from a
+new MAME trace that inserts a coin (frame 300) and presses start (frame 360),
+3600 frames, reaching the story intro's music at 33 s. Against MAME rendered
+one source at a time, mean band correlation was FM 0.997, OKI #1 1.000,
+OKI #2 1.000 and the mix 0.999. That harness reads the sample ROM directly.
+
+**The board is.** The board's HDMI audio (EVGA capture box, `hw:1,0`) was
+recorded through the same coin and start, aligned on MAME's mix, and
+compared in 2 s windows with each window realigned locally. From 34 s the
+board stays locked to within 5 ms, but envelope correlation is only 0.39-0.86 (mean
+0.79 and 0.76, two runs). OKI #1's drum hits, every 0.4 s, ring 2-3 frames
+longer on the board, and there are loud bursts between hits where MAME's
+OKI is quiet. That is ADPCM decoding wrong bytes.
+
+**Cause.** On the board each OKI reads its sample ROM through
+`oki_rom_cache`, whose `stall` is ANDed out of the chip's `cen`. That
+freezes the ADPCM fetch but not the phrase-table read. In jt6295,
+`jt6295_rom` latches the control byte on `clk` two clocks after the address
+settles, and `jt6295_ctrl` steps through its 8 bytes on `clk`. Neither waits
+on `cen`; `rom_ok` is their only gate. `ms1_sound.sv` tied `rom_ok` high. So
+on a phrase-table miss the chip took whatever byte the cache was showing.
+Bytes 4-7, the stop address, sit in the next 4-byte line, and the read
+reaches them within a few clocks of the prefetch being issued, before SDRAM
+can deliver. A wrong stop address lets a drum play on into the next
+sample's data. The cache's own header already said the phrase-table read
+"IS rom_ok-gated", but nothing connected it.
+
+**Fix.** `.rom_ok(~oki1_stall)` and `.rom_ok(~oki2_stall)`. The sound
+harness ties both stalls to 0, so its results are unchanged.
+
+**Board** (192.168.1.138, build md5 `7d2963020393f84a70cbc1aaff2b12ff`; 70 %
+ALMs, 544/553 RAM blocks, timing met). Avenging Spirit, coin and start, mean
+2 s envelope correlation against MAME's mix over 34-64 s:
+
+| build | run 1 | run 2 |
+|---|---|---|
+| v2026-11-17 (released) | 0.789 | 0.759 |
+| this build | **0.969** | **0.972** |
+
+Every window is 0.93-1.00 on this build, against 0.39-0.86 before. Also on
+this build: 64street's attract correlates 0.984 with MAME. peekaboo's
+attract (System D, banked OKI) drifts away from MAME after a few seconds on
+both builds, so it cannot judge this change. Its first 8 s are 0.93-0.97 on
+this build against 0.18-0.35 on the released one.
+
+**Elsewhere.** The NMK16 cores use the same `oki_rom_cache` with jt6295's
+`rom_ok` tied high (e.g. `bioship_core.sv`, `blkheart_core.sv`), so they
+very likely have the same defect.
